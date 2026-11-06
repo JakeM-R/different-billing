@@ -1,0 +1,1115 @@
+/* Billing & collections UI. All parsing and aging happens here in the browser via ar.js. */
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var DAY = 86400000;
+  var WORKER_URL = (document.querySelector('meta[name="worker-url"]') || {}).content || "";
+
+  var BUCKET_VARS = { current: "--b-current", b1: "--b-1", b31: "--b-31", b61: "--b-61", b90: "--b-90" };
+  // Text-safe shades of the aging ramp: tiers 1–2 are 1–30 days, then 31–60, 61–90, 90+.
+  // Tier pills: neutral for 1–30 days, amber for 31–60, muted red past 60.
+  var TIER_PILL = ["ok", "", "", "amber", "red", "red"];
+
+  var state = {
+    source: "demo", fileName: "", rows: [], headers: [], map: {},
+    ticks: {}, sort: { aging: "needs", drafts: "needs" }, tab: "demo", autoOpened: false, runDate: todayUTC(), settings: Object.assign({}, AR.DEFAULT_SETTINGS),
+    result: null, drafts: {}, dirty: {}, edits: {}, fixes: {}, open: {}, draftMode: "template", runId: 0,
+    billed: null,
+    bill: { source: "demo", fileName: "", rows: [], headers: [], map: {}, dateOrder: "auto", period: null, run: null, emails: {}, dirty: {}, edits: {}, fixes: {}, open: {}, pending: null }
+  };
+  // Early in the month the useful billing run is the month just closed; later, the one coming up.
+  (function () {
+    var t = new Date(todayUTC());
+    state.bill.period = t.getUTCDate() < 15 ? Date.UTC(t.getUTCFullYear(), t.getUTCMonth() - 1, 1) : BILL.periodOf(todayUTC()).start;
+  })();
+
+  // Invoices sent over from the billing run, laid out in the current AR file's own columns.
+  function billedRows() {
+    if (!state.billed) return [];
+    var m = state.map;
+    return state.billed.records.map(function (rec) {
+      var o = {};
+      Object.keys(rec).forEach(function (k) { if (m[k]) o[m[k]] = rec[k]; });
+      if (m.balance && !m.paid) o[m.balance] = rec.amount;
+      return o;
+    });
+  }
+  function allRows() { return state.rows.concat(billedRows()); }
+
+  // A missing email or PO typed into a Needs action card fills the blanks in that customer's
+  // rows for this session. The file itself is unchanged, so the card says to update the record.
+  function withFixes(rows, map, fixes, prefix) {
+    var keys = Object.keys(fixes).filter(function (k) { return k.indexOf(prefix) === 0; });
+    if (!keys.length) return { rows: rows, map: map };
+    var m = Object.assign({}, map);
+    ["email", "po"].forEach(function (f) { if (!m[f] && keys.some(function (k) { return fixes[k][f]; })) m[f] = "__" + f; });
+    return {
+      map: m,
+      rows: rows.map(function (r) {
+        var fx = fixes[prefix + String(r[m.customer] || "").trim().toLowerCase()];
+        if (!fx) return r;
+        var o = Object.assign({}, r);
+        Object.keys(fx).forEach(function (f) { if (m[f] && !String(o[m[f]] || "").trim()) o[m[f]] = fx[f]; });
+        return o;
+      })
+    };
+  }
+
+  function fixForm(field, id, scope, label, placeholder) {
+    return '<form class="fix" data-field="' + field + '" data-fid="' + id + '" data-scope="' + scope + '">' +
+      '<input type="' + (field === "email" ? "email" : "text") + '" aria-label="' + esc(label) + '" placeholder="' + esc(placeholder) + '" required>' +
+      '<button class="btn primary" type="submit">Use ' + (field === "email" ? "this email" : "this PO") + "</button>" +
+      '<span class="err" hidden></span></form>';
+  }
+
+  function todayUTC() { var d = new Date(); return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()); }
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function isDemo() { return state.source === "demo"; }
+  // Demo mode shows every dollar figure as $xx; an uploaded file shows real amounts.
+  var MONEY_RE = /-?\$\s?[0-9][0-9,]*(?:\.[0-9]+)?k?/g;
+  function mask(text) { return isDemo() ? String(text).replace(MONEY_RE, "$$xx") : String(text); }
+  function money(n) { return isDemo() ? "$xx" : AR.fmtMoney(Math.round(n)); }
+  function kMoney(n) { return isDemo() ? "$xx" : AR.fmtK(n); }
+  function maskDraft(d) { if (isDemo()) { d.subject = mask(d.subject); d.body = mask(d.body); } return d; }
+
+  // ---------- Date format ----------
+  // Slash dates are ambiguous (03/04/2026). The mapper shows what was detected and lets you override it.
+  var ORDER_NAMES = { mdy: "MM/DD/YYYY (US)", dmy: "DD/MM/YYYY" };
+  function dateSelect(id, rows, cols, current) {
+    var d = AR.dateOrderOf(rows, cols);
+    var auto = "Auto: " + (d.ambiguous ? "can't tell, reading as " + ORDER_NAMES.mdy : ORDER_NAMES[d.detected]);
+    return '<label>Slash dates<select id="' + id + '">' +
+      [["auto", auto], ["mdy", ORDER_NAMES.mdy], ["dmy", ORDER_NAMES.dmy]].map(function (o) {
+        return '<option value="' + o[0] + '"' + (o[0] === (current || "auto") ? " selected" : "") + ">" + esc(o[1]) + "</option>";
+      }).join("") + "</select></label>";
+  }
+  function dateCallout(d) {
+    if (!d || d.forced) return "";
+    if (d.mixed) return '<span class="callout you"><b>Mixed date formats</b>: some slash dates only work day first and others only month first. Those rows can\'t be read; set the date format when matching columns.</span>';
+    if (d.ambiguous) return '<span class="callout you"><b>Dates read as MM/DD</b>: nothing in the file shows which way round its slash dates are. If it\'s day first, upload it again and pick DD/MM.</span>';
+    return "";
+  }
+
+  // ---------- Data loading ----------
+
+  function loadDemo() {
+    var p = AR.parseCSV(DEMO.csv(todayUTC()));
+    state.source = "demo"; state.fileName = ""; state.settings.dateOrder = "auto";
+    state.headers = p.headers; state.rows = p.rows; state.map = AR.autoMap(p.headers);
+    $("mapper").innerHTML = "";
+    runAnalysis();
+  }
+
+  // ---------- Tabs ----------
+
+  function setTab(tab, quiet) {
+    state.tab = tab;
+    $("tabDemo").setAttribute("aria-selected", tab === "demo");
+    $("tabUpload").setAttribute("aria-selected", tab === "upload");
+    $("uploadPanel").hidden = tab !== "upload";
+    if (tab === "demo") {
+      if (!isDemo()) loadDemo();
+      if (!billDemo()) loadBillDemo();
+    } else {
+      renderUploadHead();
+      renderBillHead();
+      $("guide").open = isDemo();
+      $("billGuide").open = billDemo();
+      if (!quiet) $("uploadPanel").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }
+
+  function renderUploadHead() {
+    if (!isDemo()) {
+      $("uploadHead").innerHTML = '<div class="loaded"><span>Showing <b>' + esc(state.fileName) + "</b> · " + state.rows.length + " rows</span>" +
+        '<span class="spacer"></span><label for="file" class="btn" tabindex="0" data-pick>Choose another file</label><button class="btn ghost" type="button" id="arBackDemo">Back to demo</button></div>';
+      $("arBackDemo").onclick = function () { loadDemo(); renderUploadHead(); $("guide").open = true; };
+      return;
+    }
+    $("uploadHead").innerHTML = '<div class="drop" id="drop"><span class="mono">For 02 · Chase</span><h3>Open invoices</h3>' +
+      "<p>Invoice export from Stripe, QuickBooks or your CRM, as CSV. Optional: the billing run's own invoices can go straight into the aging.</p>" +
+      '<div class="row"><label for="file" class="btn primary" tabindex="0" data-pick>Choose CSV</label>' +
+      '<button class="btn" type="button" id="tplBtn">Download template</button></div></div>';
+    var drop = $("drop");
+    ["dragenter", "dragover"].forEach(function (t) { drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.add("over"); }); });
+    ["dragleave", "drop"].forEach(function (t) { drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.remove("over"); }); });
+    drop.addEventListener("drop", function (e) { var f = e.dataTransfer.files[0]; if (f) loadFile(f); });
+    $("tplBtn").addEventListener("click", downloadTemplate);
+  }
+
+  // One header name per column, the same as the template. Other common names are matched automatically.
+  var GUIDE_HEADERS = { invoice: "Invoice number", customer: "Company name", email: "Contact email", ccEmail: "AP email",
+    amount: "Amount", paid: "Amount paid", balance: "Open balance", issueDate: "Invoice date", dueDate: "Due date",
+    status: "Status", terms: "Terms", paidDate: "Paid date", lastContacted: "Last contacted" };
+
+  function renderGuide() {
+    var need = function (f) {
+      return f.required ? '<span class="need req">Required</span>' : f.recommended ? '<span class="need rec">Recommended</span>' : '<span class="need opt">Optional</span>';
+    };
+    $("guideTable").innerHTML = "<table><thead><tr><th>Column</th><th></th><th>What it's used for</th></tr></thead><tbody>" +
+      AR.FIELDS.map(function (f) {
+        return '<tr><td class="f">' + esc(GUIDE_HEADERS[f.key]) + "</td><td>" + need(f) + '</td><td class="u">' + esc(f.use) + "</td></tr>";
+      }).join("") + "</tbody></table>";
+  }
+
+  function downloadTemplate() {
+    var lines = [
+      "Invoice number,Company name,Contact email,AP email,Amount,Amount paid,Invoice date,Due date,Status,Terms,Paid date,Last contacted",
+      "DEMO-001,Customer A,billing@customer-a.example,,1000.00,0.00,2026-09-01,2026-10-01,Open,Net 30,,2026-10-08",
+      "DEMO-002,Customer A,billing@customer-a.example,,500.00,500.00,2026-07-01,2026-07-31,Paid,Net 30,2026-08-05,"
+    ];
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([lines.join("\n") + "\n"], { type: "text/csv" }));
+    a.download = "open-invoices-template.csv"; a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  }
+
+  function loadFile(file) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      var p = AR.parseCSV(reader.result);
+      if (state.tab !== "upload") setTab("upload");
+      if (!p.headers.length || !p.rows.length) { showMapperError("That file has no rows."); return; }
+      state.pending = { headers: p.headers, rows: p.rows, name: file.name };
+      renderMapper(p.headers, AR.autoMap(p.headers), file.name, p.rows.length);
+    };
+    reader.readAsText(file);
+  }
+
+  function showMapperError(msg) {
+    $("mapper").innerHTML = '<div class="mapper"><p class="err">' + esc(msg) + "</p></div>";
+  }
+
+  function renderMapper(headers, map, name, n) {
+    var opts = function (sel) {
+      return '<option value="">Not in file</option>' + headers.map(function (h) {
+        return '<option value="' + esc(h) + '"' + (h === sel ? " selected" : "") + ">" + esc(h) + "</option>";
+      }).join("");
+    };
+    $("mapper").innerHTML =
+      '<div class="mapper"><h3>Match columns: ' + esc(name) + "</h3>" +
+      "<p>" + n + " rows. Matched from your headers; check anything marked required. The guide below says what each column does.</p>" +
+      '<div class="mapgrid">' + AR.FIELDS.map(function (f) {
+        return "<label>" + esc(f.label) + (f.required ? ' <span class="req">required</span>' : "") +
+          '<select data-k="' + f.key + '">' + opts(map[f.key]) + "</select></label>";
+      }).join("") + dateSelect("dateOrder", state.pending.rows, [map.dueDate, map.issueDate, map.paidDate, map.lastContacted]) + "</div>" +
+      '<div class="actions"><button class="btn primary" id="applyMap" type="button">Run aging</button>' +
+      '<button class="btn ghost" id="cancelMap" type="button">Cancel</button><span class="err" id="mapErr"></span></div></div>';
+    $("applyMap").onclick = function () {
+      var m = {};
+      document.querySelectorAll("#mapper select").forEach(function (s) { if (s.value && s.dataset.k) m[s.dataset.k] = s.value; });
+      var miss = AR.missingRequired(m);
+      if (miss.length) { $("mapErr").textContent = "Still needed: " + miss.join(", "); return; }
+      state.source = "file"; state.fileName = state.pending.name; state.settings.dateOrder = $("dateOrder").value;
+      state.headers = state.pending.headers; state.rows = state.pending.rows; state.map = m;
+      $("mapper").innerHTML = "";
+      runAnalysis();
+      renderUploadHead();
+      $("guide").open = false;
+      $("chase").scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    $("cancelMap").onclick = function () { $("mapper").innerHTML = ""; };
+    $("mapper").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // ---------- Run ----------
+
+  // ---------- Actioned ticks ----------
+  // Per-viewer convenience kept in this browser only. A tick clears Needs action and logs
+  // the run date as the last contact.
+  function tickKey(c) { return "arc:actioned:" + (isDemo() ? "demo" : state.fileName) + ":" + c.name; }
+  function readTick(c) { try { return localStorage.getItem(tickKey(c)); } catch (e) { return state.ticks[tickKey(c)] || null; } }
+  function writeTick(c, val) {
+    state.ticks[tickKey(c)] = val;
+    try { if (val) localStorage.setItem(tickKey(c), val); else localStorage.removeItem(tickKey(c)); } catch (e) { /* memory only */ }
+  }
+  function applyTicks(res) {
+    res.customers.forEach(function (c) {
+      if (c.flaggedNeeds == null) { c.flaggedNeeds = c.needsYou; c.importedContact = c.lastContacted; }
+      // A tick lasts one run. An older one still counts as the last contact.
+      var t = readTick(c), td = AR.parseDate(t);
+      c.actioned = AR.tickActive(t, state.runDate) && c.tier >= 1;
+      c.needsYou = c.flaggedNeeds && !c.actioned;
+      c.lastContacted = td != null && td <= state.runDate ? Math.max(td, c.importedContact || 0) : c.importedContact;
+    });
+  }
+  function contactText(c) {
+    if (c.lastContacted == null) return "No contact logged";
+    var d = Math.round((state.runDate - c.lastContacted) / DAY);
+    return "Last contacted " + AR.fmtShortDate(c.lastContacted) + (d === 0 ? " (today)" : " (" + d + (d === 1 ? " day" : " days") + " ago)");
+  }
+
+  // Edits are kept per file and customer, so a re-run (new run date, sign-off, billed invoices)
+  // rebuilds the templates without throwing away what you typed.
+  function editKey(c) { return (isDemo() ? "demo" : state.fileName) + "|" + c.name.toLowerCase(); }
+
+  function runAnalysis() {
+    var fx = withFixes(allRows(), state.map, state.fixes, (isDemo() ? "demo" : state.fileName) + "|");
+    state.result = AR.analyze(fx.rows, fx.map, state.runDate, state.settings);
+    applyTicks(state.result);
+    state.drafts = {}; state.dirty = {}; state.draftMode = "template";
+    state.result.customers.forEach(function (c, i) {
+      c.id = i;
+      var d = maskDraft(AR.templateDraft(c, state.runDate, state.settings)), e = state.edits[editKey(c)];
+      if (e && d.body) { d.subject = e.subject; d.body = e.body; d.editedFor = e.runDate; state.dirty[i] = true; }
+      state.drafts[i] = d;
+    });
+    // First load of the demo opens the Tier 3 draft, the one that shows the most (CC to AP, invoice list, firm ask).
+    if (isDemo() && !state.autoOpened) {
+      state.autoOpened = true;
+      var t3 = state.result.customers.filter(function (c) { return c.tier === 3 && c.action === "chase"; })[0];
+      if (t3) state.open[editKey(t3)] = true;
+    }
+    render();
+    requestModelDrafts();
+  }
+
+  function requestModelDrafts() {
+    var res = state.result;
+    var targets = res.customers.filter(function (c) { return c.action === "chase" || c.action === "billing"; });
+    if (!WORKER_URL) { setStatus("", "Drafts from fixed templates per tier."); return; }
+    if (!targets.length) { setStatus("", "Nothing to draft this run"); return; }
+    var runId = ++state.runId;
+    setStatus("busy", "Drafting with AI… templates shown meanwhile");
+    var ctrl = new AbortController();
+    var timer = setTimeout(function () { ctrl.abort(); }, 45000);
+    fetch(WORKER_URL, {
+      method: "POST", headers: { "content-type": "application/json" }, signal: ctrl.signal,
+      body: JSON.stringify({ customers: targets.slice(0, 15).map(function (c) { return AR.modelSummary(c, state.runDate, state.settings); }) })
+    }).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(function (data) {
+      clearTimeout(timer);
+      if (runId !== state.runId) return;
+      var used = 0, rejected = 0;
+      (data.drafts || []).forEach(function (d) {
+        var c = targets[d.index];
+        if (!c || state.dirty[c.id]) return;
+        var chosen = AR.chooseDraft(d, c, state.runDate, state.settings);
+        if (chosen.source === "claude") used++; else rejected++;
+        state.drafts[c.id] = maskDraft(chosen);
+      });
+      state.draftMode = "claude";
+      renderCards();
+      setStatus("ok", "Drafted by AI: " + used + (rejected ? " · " + rejected + " fell back to template after failing a rule check" : "") + ". Every draft is checked against the rules before it's shown.");
+    }).catch(function () {
+      clearTimeout(timer);
+      if (runId !== state.runId) return;
+      setStatus("", "AI drafting unavailable right now, so these are the fixed templates per tier");
+    });
+  }
+
+  function setStatus(cls, text) {
+    var el = $("draftStatus");
+    el.className = "status " + cls;
+    el.lastElementChild.textContent = text;
+  }
+
+  // ---------- Render ----------
+
+  function render() {
+    var res = state.result;
+    var pill = $("dataPill");
+    pill.className = "pill " + (isDemo() ? "demo" : "file");
+    pill.textContent = isDemo() ? "Demo invoices" : state.fileName;
+    pill.title = isDemo() ? "Fictional customers and figures" : "Your file, processed in this browser";
+
+    $("runDate").value = AR.isoDate(state.runDate);
+
+    var n = res.toChase;
+    $("headline").textContent = n + " customer" + (n === 1 ? " is" : "s are") + " late. Each one has a draft.";
+    $("figures").innerHTML = fig("Outstanding", kMoney(res.totalAR)) + fig("Over 30 days", kMoney(res.over30)) + fig("Next run", esc(AR.fmtDate(res.nextRun)));
+
+    var needs = res.customers.filter(function (c) { return c.needsYou; });
+    var chase = res.customers.filter(function (c) { return c.action === "chase"; }).length;
+    var billing = res.customers.filter(function (c) { return c.action === "billing"; }).length;
+    var co = [];
+    if (needs.length) co.push('<span class="callout you"><b>' + needs.length + " need action</b>: " + needs.map(function (c) { return esc(c.name); }).join(", ") + "</span>");
+    co.push('<span class="callout"><b>' + chase + "</b> chaser draft" + (chase === 1 ? "" : "s") + " ready</span>");
+    if (billing) co.push('<span class="callout"><b>' + billing + "</b> billing repl" + (billing === 1 ? "y" : "ies") + "</span>");
+    if (!isDemo() && dateCallout(res.dates)) co.push(dateCallout(res.dates));
+    if (res.excludedTotal) co.push('<span class="callout"><b>' + res.excludedTotal + "</b> rows excluded</span>");
+    if (state.billed) {
+      var b = state.billed;
+      co.push('<span class="callout"><b>' + b.count + "</b> invoice" + (b.count === 1 ? "" : "s") + " from the " + esc(b.label) + " billing run included, due " + esc(AR.fmtShortDate(b.firstDue)) +
+        (b.demo && !isDemo() ? " (demo invoices in your file)" : "") + '<button class="link" type="button" id="unbill">Remove</button></span>');
+    }
+    $("callouts").innerHTML = co.join("");
+    var ub = $("unbill");
+    if (ub) ub.onclick = function () { state.billed = null; runAnalysis(); renderHandoff(); };
+
+    renderAging();
+    renderCards();
+    renderRubric();
+    renderHandoffOutputs();
+  }
+
+  // One key figure under a headline: small label, value below. The value is already escaped.
+  function fig(k, v) { return '<div class="fig"><span class="k">' + esc(k) + '</span><span class="v">' + v + "</span></div>"; }
+
+
+  // "overdue": oldest invoice first. "amount": largest open balance first.
+  // "needs": customers that need action first, then oldest.
+  function sorted(list, by) {
+    return list.slice().sort(function (a, b) {
+      return by === "amount" ? (b.balance - a.balance) || (b.oldestDays - a.oldestDays)
+        : by === "needs" ? (b.needsYou - a.needsYou) || (b.oldestDays - a.oldestDays) || (b.balance - a.balance)
+        : (b.oldestDays - a.oldestDays) || (b.balance - a.balance);
+    });
+  }
+
+  function renderAging() {
+    var res = state.result;
+    $("legend").innerHTML = AR.BUCKETS.map(function (b) {
+      return '<span><i style="background:var(' + BUCKET_VARS[b.key] + ')"></i>' + b.label + (b.key === "current" ? "" : " days") + "</span>";
+    }).join("");
+    var head = "<thead><tr><th>Customer</th>" + AR.BUCKETS.map(function (b) { return "<th>" + b.label + "</th>"; }).join("") + "<th>Total</th><th></th></tr></thead>";
+    var rows = sorted(res.customers, state.sort.aging);
+    var body = rows.map(function (c) {
+      var bar = AR.BUCKETS.map(function (b) {
+        var v = c.buckets[b.key];
+        return v ? '<span style="width:' + (v / c.balance * 100).toFixed(2) + "%;background:var(" + BUCKET_VARS[b.key] + ')" title="' + b.label + ": " + money(v) + '"></span>' : "";
+      }).join("");
+      var meta = [];
+      if (c.needsYou) meta.push('<span class="tag you">Needs action</span>');
+      if (c.actioned) meta.push('<span class="tag done">Actioned</span>');
+      if (!c.tier) meta.push('<span class="tag done">✓ Current</span>');
+      meta.push("<span>" + (c.tier ? c.oldestDays + " days overdue · " + esc(contactText(c).replace("Last contacted", "contacted").replace("No contact logged", "no contact logged")) : "nothing overdue") + "</span>");
+      return "<tr><td class=\"name\"><div class=\"n\">" + esc(c.name) + '</div><div class="meta">' + meta.join("") + "</div></td>" +
+        AR.BUCKETS.map(function (b) { var v = c.buckets[b.key]; return '<td class="b' + (v ? "" : " zero") + '">' + (v ? money(v) : "–") + "</td>"; }).join("") +
+        '<td class="tot">' + money(c.balance) + '</td><td class="barcell"><div class="bar" role="img" aria-label="' + esc(c.name) + " aging split\">" + bar + "</div></td></tr>";
+    }).join("");
+    var tot = { current: 0, b1: 0, b31: 0, b61: 0, b90: 0 };
+    var shownTotal = 0;
+    rows.forEach(function (c) { shownTotal += c.balance; Object.keys(tot).forEach(function (k) { tot[k] += c.buckets[k]; }); });
+    var foot = "<tfoot><tr><td>Total</td>" + AR.BUCKETS.map(function (b) { return '<td class="b">' + money(tot[b.key]) + "</td>"; }).join("") +
+      '<td class="tot">' + money(shownTotal) + "</td><td></td></tr></tfoot>";
+    $("aging").innerHTML = head + "<tbody>" + body + "</tbody>" + foot;
+
+    var ex = res.excluded, parts = [];
+    if (ex.paid) parts.push(ex.paid + " paid or void");
+    if (ex.nonPositive) parts.push(ex.nonPositive + " zero or negative balance (incl. credit notes)");
+    if (ex.noDueDate) parts.push(ex.noDueDate + " missing or unreadable due date");
+    if (ex.duplicate) parts.push(ex.duplicate + " duplicate invoice #");
+    if (ex.unreadable) parts.push(ex.unreadable + " unreadable");
+    var nRows = allRows().length;
+    var cf = ex.conflicts || [];
+    $("excluded").innerHTML = (res.excludedTotal
+      ? "<b>Left out " + res.excludedTotal + " of " + nRows + " rows:</b> " + esc(parts.join(", ")) + "."
+      : "<b>No rows left out</b> (" + nRows + " rows).") +
+      (cf.length ? " <b>Check the export:</b> " + esc(cf.join(", ")) + (cf.length === 1 ? " is" : " are") + " listed as both paid and open; the first row was used." : "");
+  }
+
+  // Tier as coloured text on the facts line. A disputed invoice isn't a tier: it gets a billing reply.
+  function tierLabel(c) {
+    var disputed = c.action === "billing" || (c.disputed && c.disputed.length && c.action !== "chase");
+    var label = disputed ? "Disputed" : "Tier " + c.tier + " · " + AR.TIER_NAMES[c.tier];
+    return '<span class="tier ' + (disputed ? "" : TIER_PILL[c.tier]) + '">' + esc(label) + "</span>";
+  }
+
+  function renderCards() {
+    var res = state.result;
+    var shown = sorted(res.customers.filter(function (c) { return c.tier >= 1; }), state.sort.drafts);
+    $("cards").innerHTML = shown.map(function (c) {
+      var d = state.drafts[c.id];
+      var facts = tierLabel(c) + '<span class="sep">·</span><span>' + money(c.balance) + " open · " + c.invoices.length + " invoice" + (c.invoices.length === 1 ? "" : "s") + " · " + c.oldestDays + " days overdue</span>";
+      var flags = c.flags.map(function (f) { return "<li>" + esc(mask(f)) + "</li>"; });
+      if (c.toneNote && c.action === "chase") flags.push('<li class="tone">' + esc(c.toneNote) + "</li>");
+      if (state.dirty[c.id] && d.editedFor !== state.runDate) flags.push("<li>You edited this draft for the " + esc(AR.fmtDate(d.editedFor)) + " run. Check its figures and dates before sending.</li>");
+      if (state.fixes[editKey(c)]) flags.push("<li>Email added on this page, not in the export. Update the record so the next run has it.</li>");
+      if (d.rejected) flags.push("<li>AI draft failed a rule check (" + esc(mask(d.rejected[0])) + "), template used</li>");
+      var why = c.tier === 5 ? "Over 90 days. This needs a call from you, not another email."
+        : !c.email ? "No contact email in the export. Add one here to draft the email, and update the record too."
+        : "Check this account before anything goes out.";
+      var preview = d.body ? "Draft ready: " + d.subject : why;
+      var summary = '<summary><div class="sl"><div class="cname">' + esc(c.name) + "</div>" +
+        '<div class="facts num">' + facts + "</div>" +
+        '<div class="contact">' + esc(contactText(c)) + "</div>" +
+        '<div class="preview">' + esc(preview) + "</div></div>" +
+        '<div class="sr2">' + (c.needsYou ? '<span class="tag you">Needs action</span>' : "") +
+        '<span class="act' + (c.actioned ? " on" : "") + '" data-act="' + c.id + '" role="checkbox" tabindex="0" aria-checked="' + c.actioned + '" title="Tick once handled. Clears Needs action and logs today as last contacted.">' +
+        '<input type="checkbox" tabindex="-1" aria-hidden="true"' + (c.actioned ? " checked" : "") + '>Actioned</span>' +
+        '<svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div></summary>';
+      var fl = flags.length ? '<ul class="flags">' + flags.join("") + "</ul>" : "";
+      var bd;
+      if (!d.body) {
+        var canFix = !c.email && c.tier < 5;
+        bd = '<div class="bd">' + fl + '<div class="needs"><b>Needs action</b><p>' + esc(why) + "</p>" +
+          (canFix ? fixForm("email", c.id, "ar", "Contact email", "name@company.com") : "") + "</div></div>";
+      } else {
+        bd = '<div class="bd">' + fl + '<div class="addr"><b>To</b> ' + esc(d.to) + (d.cc ? " · <b>Cc</b> " + esc(d.cc) : "") +
+          (c.tier === 4 ? " · <b>Send from founder</b>" : "") + "</div>" +
+          '<label class="flabel">Subject<input class="subj" data-id="' + c.id + '" value="' + esc(d.subject) + '"></label>' +
+          '<label class="flabel">Message<textarea data-id="' + c.id + '" spellcheck="true">' + esc(d.body) + "</textarea></label>" +
+          '<div class="ft"><button class="btn primary" type="button" data-copy="' + c.id + '">Copy</button>' +
+          '<a class="btn" target="_blank" rel="noopener" data-gmail="' + c.id + '" href="' + gmailUrl(d) + '">Open in Gmail</a>' +
+          (state.dirty[c.id] ? '<button class="btn ghost" type="button" data-revert="' + c.id + '">Discard edits</button>' : "") +
+          '<span class="src">' + (d.source === "claude" ? "Drafted by AI" : "Template") + (state.dirty[c.id] ? " · edited" : "") + "</span></div></div>";
+      }
+      return '<details class="card' + (c.needsYou ? " you" : "") + (c.actioned ? " done" : "") + '" data-card="' + c.id + '"' + (state.open[editKey(c)] ? " open" : "") + ">" + summary + bd + "</details>";
+    }).join("");
+
+    document.querySelectorAll("#cards textarea").forEach(fit);
+
+    var listed = res.customers.filter(function (c) { return c.tier === 0; });
+    $("listed").innerHTML = listed.length
+      ? "<b>Not yet due, no action:</b> " + listed.map(function (c) { return esc(c.name) + " (" + money(c.balance) + ")"; }).join(", ")
+      : "";
+  }
+
+  function fit(ta) { ta.style.height = "auto"; ta.style.height = ta.scrollHeight + 2 + "px"; }
+
+  function gmailUrl(d) {
+    var q = "view=cm&fs=1&to=" + encodeURIComponent(d.to || "") + (d.cc ? "&cc=" + encodeURIComponent(d.cc) : "") +
+      "&su=" + encodeURIComponent(d.subject) + "&body=" + encodeURIComponent(d.body);
+    return "https://mail.google.com/mail/?" + q;
+  }
+
+  function renderRubric() {
+    if ($("rubric").dataset.done) return;
+    $("rubric").dataset.done = "1";
+    $("rubric").innerHTML = "<table><thead><tr><th>Tier</th><th>Days overdue</th><th>Tone</th><th>Must include</th><th>Ask</th></tr></thead><tbody>" +
+      AR.RUBRIC.map(function (r) {
+        return "<tr><td><b>" + r.tier + "</b></td><td>" + esc(r.days) + "</td><td>" + esc(r.tone) + "</td><td>" + esc(r.include) + "</td><td>" + esc(r.ask) + "</td></tr>";
+      }).join("") + "</tbody></table>" +
+      "<ul><li><b>Disputed:</b> no chaser; a billing-question reply instead.</li>" +
+      "<li><b>Partial payment:</b> thanks them for what arrived and chases only the remainder.</li>" +
+      "<li><b>No late payments in 12 months:</b> tone one step softer. <b>Two or more:</b> one step firmer. Tier stays for routing.</li>" +
+      "<li><b>Over 20% of total AR:</b> flagged “Needs action”, still drafted.</li>" +
+      "<li><b>Missing contact email:</b> no draft, flagged for data cleanup.</li>" +
+      "<li><b>Hard rules:</b> figures only from the export, no legal or collections language, no fees unless the terms state one, under 120 words, no exclamation marks.</li></ul>";
+  }
+
+  // ---------- Copy helpers ----------
+
+  function copy(text, btn) {
+    var done = function () {
+      var t = btn.textContent; btn.textContent = "Copied"; btn.classList.add("done");
+      setTimeout(function () { btn.textContent = t; btn.classList.remove("done"); }, 1400);
+    };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done, fallback);
+    else fallback();
+    function fallback() {
+      var ta = document.createElement("textarea"); ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) { /* leave text selectable */ }
+      ta.remove();
+    }
+  }
+
+  // ---------- Apps Script ----------
+
+  var scriptText = "";
+  function loadScript() {
+    Promise.all([fetch("ar.js").then(function (r) { return r.text(); }), fetch("sheet-runner.js").then(function (r) { return r.text(); })])
+      .then(function (parts) {
+        scriptText = "/* Billing & collections: aging and chaser drafts as a Google Apps Script. Generated from the same core as the web page. */\n\n" + parts[0] + "\n\n" + parts[1];
+        $("scriptCode").textContent = scriptText;
+        $("scriptSize").textContent = "· " + scriptText.split("\n").length + " lines";
+      })
+      .catch(function () { $("scriptCode").textContent = "Couldn't load the script. Serve the page over http(s) rather than file://."; });
+  }
+
+  // ---------- Month-end billing ----------
+
+  function billDemo() { return state.bill.source === "demo"; }
+  function bMask(text) { return billDemo() ? String(text).replace(MONEY_RE, "$$xx") : String(text); }
+  function bMoney(n) { return billDemo() ? "$xx" : AR.fmtMoney(n); }
+  function bK(n) { return billDemo() ? "$xx" : AR.fmtK(n); }
+  function signed(n) { return billDemo() ? (n < 0 ? "−$xx" : "+$xx") : (n < 0 ? "−" : "+") + AR.fmtK(Math.abs(n)); }
+
+  function download(name, text, type) {
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text], { type: type || "text/csv" }));
+    a.download = name; a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  }
+
+  function loadBillDemo() {
+    var p = AR.parseCSV(DEMO.contractsCSV(state.bill.period));
+    var b = state.bill;
+    b.source = "demo"; b.fileName = ""; b.dateOrder = "auto"; b.headers = p.headers; b.rows = p.rows; b.map = BILL.autoMap(p.headers);
+    $("billMapper").innerHTML = "";
+    runBilling();
+  }
+
+  function runBilling() {
+    var b = state.bill;
+    var fx = withFixes(b.rows, b.map, b.fixes, billSrc() + "|");
+    b.run = BILL.billingRun(fx.rows, fx.map, b.period, { dateOrder: b.dateOrder, issued: readIssued(BILL.periodOf(b.period).key) });
+    b.run.invoices.forEach(function (inv) {
+      var f = b.fixes[billSrc() + "|" + inv.customer.toLowerCase()];
+      if (f) inv.notes.push((f.email && f.po ? "Email and PO" : f.email ? "Email" : "PO") + " added on this page, not in the file: update the record too");
+    });
+    b.emails = {}; b.dirty = {};
+    b.run.invoices.forEach(function (inv, i) {
+      inv.id = i;
+      var e = BILL.coverEmail(inv, b.run, state.settings);
+      if (billDemo()) { e.subject = bMask(e.subject); e.body = bMask(e.body); }
+      var ed = b.edits[billKey(inv)];
+      if (ed) { e.subject = ed.subject; e.body = ed.body; b.dirty[i] = true; }
+      b.emails[i] = e;
+    });
+    renderBilling();
+  }
+
+  // Cover-email edits survive a re-run of the same month (a new sign-off, say), keyed by invoice number.
+  function billSrc() { return billDemo() ? "demo" : state.bill.fileName; }
+
+  // Invoice numbers become fixed once an invoice leaves the page (a PDF, a CSV, a copied or
+  // opened email, or the hand-off), so a later re-run keeps them. Kept in this browser.
+  var issuedMem = {};
+  function issuedKey(period) { return "arc:issued:" + billSrc() + ":" + period; }
+  function readIssued(period) {
+    try { var v = localStorage.getItem(issuedKey(period)); if (v) return JSON.parse(v); } catch (e) { /* memory only */ }
+    return issuedMem[issuedKey(period)] || {};
+  }
+  function markIssued(invoices) {
+    var run = state.bill.run, k = issuedKey(run.period.key), cur = readIssued(run.period.key);
+    invoices.forEach(function (inv) { cur[BILL.numberKey(inv)] = inv.number; });
+    issuedMem[k] = cur;
+    try { localStorage.setItem(k, JSON.stringify(cur)); } catch (e) { /* memory only */ }
+  }
+  function billKey(inv) { return billSrc() + "|" + state.bill.run.period.key + "|" + inv.number; }
+
+  function kindBadge(inv) {
+    var n = inv.notes.join(" "), c = inv.contracts;
+    if (/New contract/.test(n)) return '<span class="badge new">New</span>';
+    if (/final invoice/.test(n)) return '<span class="badge final">Final</span>';
+    if (c.some(function (x) { return x.freq.months === 12 && x.onCycle; })) return '<span class="badge">Annual</span>';
+    if (c.some(function (x) { return x.freq.months === 3 && x.onCycle; })) return '<span class="badge">Quarterly</span>';
+    if (c.some(function (x) { return x.usage; })) return '<span class="badge">Usage</span>';
+    if (/renewal/.test(n)) return '<span class="badge final">Renewal due</span>';
+    return ""; // a routine monthly bill needs no badge
+  }
+
+  function renderBilling() {
+    var b = state.bill, run = b.run, P = run.period;
+    $("billMonth").value = P.key;
+    var n = run.invoices.length;
+    $("billHeadline").textContent = n + " invoice" + (n === 1 ? "" : "s") + " to send";
+    $("billFigures").innerHTML = fig("Billed", bK(run.total)) + fig("Issued", esc(AR.fmtDate(P.end)));
+
+    var needs = run.invoices.filter(function (i) { return i.needsYou; }).map(function (i) { return i.customer; })
+      .concat(run.skipped.filter(function (s) { return s.needsYou; }).map(function (s) { return s.customer; }));
+    var co = [];
+    if (needs.length) co.push('<span class="callout you"><b>' + needs.length + " to check before sending</b>: " + needs.map(esc).join(", ") + "</span>");
+    if (run.bridge) co.push('<span class="callout"><b>' + signed(run.bridge.change) + "</b> on last month, " + run.bridge.items.length + " change" + (run.bridge.items.length === 1 ? "" : "s") + " explained</span>");
+    var off = run.skipped.filter(function (s) { return !s.needsYou; }).length;
+    if (off) co.push('<span class="callout"><button class="jump" type="button" data-jump="notBilled"><b>' + off + "</b> contract" + (off === 1 ? "" : "s") + " not billed this month</button></span>");
+    if (!billDemo() && dateCallout(run.dates)) co.push(dateCallout(run.dates));
+    if (run.unreadable) co.push('<span class="callout"><b>' + run.unreadable + "</b> unreadable row" + (run.unreadable === 1 ? "" : "s") + " (no customer or fee)</span>");
+    $("billCallouts").innerHTML = co.join("");
+
+    $("billSrc").innerHTML = billDemo()
+      ? '<span class="pill demo">Demo contracts</span><span>' + b.rows.length + " fictional contracts across " + new Set(b.rows.map(function (r) { return r[b.map.customer]; })).size + " customers</span>" +
+        '<span class="spacer"></span><label for="billFile" class="btn" tabindex="0" data-bpick>Use your contracts CSV</label><button class="btn ghost" type="button" id="billTpl">Download template</button>'
+      : '<span class="pill file">' + esc(b.fileName) + "</span><span>" + b.rows.length + " contracts</span>" +
+        '<span class="spacer"></span><label for="billFile" class="btn" tabindex="0" data-bpick>Choose another file</label><button class="btn ghost" type="button" id="billBackDemo">Back to demo</button>';
+    if ($("billTpl")) $("billTpl").onclick = function () { download("contracts-template.csv", billTemplate()); };
+    if ($("billBackDemo")) $("billBackDemo").onclick = function () { loadBillDemo(); renderBillHead(); };
+    renderBillHead();
+
+    renderBridge();
+    renderInvoices();
+    var nb = run.skipped;
+    $("notBilled").innerHTML = nb.length
+      ? "<b>Not billed this month:</b> " + nb.map(function (s) { return esc(s.customer) + " (" + esc(s.reason) + ")"; }).join("; ")
+      : "";
+    renderBillRules();
+    renderHandoff();
+    renderHandoffOutputs();
+  }
+
+  // The contracts drop zone in the Your data panel.
+  function renderBillHead() {
+    var b = state.bill;
+    if (!billDemo()) {
+      $("billHead").innerHTML = '<div class="loaded"><span>Billing from <b>' + esc(b.fileName) + "</b> · " + b.rows.length + " contracts</span>" +
+        '<span class="spacer"></span><label for="billFile" class="btn" tabindex="0" data-bpick>Choose another file</label></div>';
+      return;
+    }
+    $("billHead").innerHTML = '<div class="drop" id="bdrop"><span class="mono">For 01 · Bill and 03 · Hand off</span><h3>Contracts</h3>' +
+      "<p>CRM export or Sheet, one row per contract, as CSV. Read in this browser and never uploaded anywhere.</p>" +
+      '<div class="row"><label for="billFile" class="btn primary" tabindex="0" data-bpick>Choose CSV</label>' +
+      '<button class="btn" type="button" id="bTplBtn">Download template</button></div></div>';
+    var drop = $("bdrop");
+    ["dragenter", "dragover"].forEach(function (t) { drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.add("over"); }); });
+    ["dragleave", "drop"].forEach(function (t) { drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.remove("over"); }); });
+    drop.addEventListener("drop", function (e) { var f = e.dataTransfer.files[0]; if (f) loadBillFile(f); });
+    $("bTplBtn").onclick = function () { download("contracts-template.csv", billTemplate()); };
+  }
+
+  // ---------- Hand off: close pack and founder summary ----------
+
+  function packNow() { return state.bill.run && state.result ? PACK.build(state.bill.run, state.result, state.runDate) : null; }
+  var AGE_PILL = { current: "ok", b1: "", b31: "amber", b61: "red", b90: "red" };
+
+  function renderHandoffOutputs() {
+    var pack = packNow();
+    if (!pack) return;
+    var bm = function (n) { return bMoney(n); }, am = function (n) { return money(n); };
+    $("packHeadline").innerHTML = "Close pack for " + esc(pack.period.label);
+    $("regMeta").textContent = plural(pack.register.length, "invoice");
+    $("register").innerHTML = "<thead><tr><th>Invoice</th><th>Customer</th><th class=\"hide-sm\">Issued</th><th class=\"hide-sm\">Due</th><th class=\"r\">Amount</th><th>Status</th></tr></thead><tbody>" +
+      pack.register.map(function (r) {
+        var cls = r.statusKey === "held" ? "red" : r.statusKey === "overdue" ? "amber" : r.statusKey === "open" ? "ok" : "";
+        return "<tr><td>" + esc(r.number) + '</td><td class="c">' + esc(r.customer) + '</td><td class="hide-sm">' + esc(AR.fmtShortDate(r.issueDate)) + '</td><td class="hide-sm">' + esc(AR.fmtShortDate(r.dueDate)) +
+          '</td><td class="r">' + bm(r.amount) + '</td><td><span class="pill ' + cls + '">' + esc(r.statusKey === "held" ? "Held" : r.status) + "</span></td></tr>";
+      }).join("") + '</tbody><tfoot><tr><td colspan="2">Total</td><td class="hide-sm"></td><td class="hide-sm"></td><td class="r">' + bm(pack.total) + "</td><td></td></tr></tfoot>";
+    $("ageMeta").textContent = "at " + AR.fmtShortDate(pack.runDate);
+    $("buckets").innerHTML = pack.buckets.map(function (b) {
+      return '<li><span class="pill ' + AGE_PILL[b.key] + '">' + (b.key === "current" ? "✓ " : "") + esc(b.label) + (b.key === "current" ? "" : " days") + '</span><span class="cnt">' + plural(b.count, "invoice") + '</span><span class="amt">' + am(b.amount) + "</span></li>";
+    }).join("") + '<li><span>Total open AR</span><span class="amt">' + am(pack.arTotal) + "</span></li>";
+    $("ageNote").textContent = state.billed && state.billed.key === pack.period.key
+      ? "Includes this month's " + state.billed.count + " invoices."
+      : "All open invoices in the aging data. This month's invoices join once you add them to the aging run.";
+    var groups = [["added", "Added"], ["ended", "Ended"], ["changed", "Changed"]];
+    var sgn = function (n) { return billDemo() ? (n < 0 ? "−$xx" : "+$xx") : (n < 0 ? "−" : "+") + AR.fmtMoney(Math.abs(n)); };
+    $("reconMeta").textContent = pack.bridge ? "vs " + AR.fmtDate(Date.UTC(pack.period.year, pack.period.month - 1, 1)).split(" ")[0] : "";
+    $("recon").innerHTML = groups.map(function (g) {
+      var items = pack.recon[g[0]];
+      return "<div><h4>" + g[1] + "</h4><ul>" + (items.length ? items.map(function (it) {
+        return "<li><b>" + esc(it.customer) + "</b>" + (it.delta ? " " + sgn(it.delta) : "") + "<span>" + esc(it.contract) + " · " + esc(it.reason) + "</span></li>";
+      }).join("") : '<li class="none">None this month</li>') + "</ul></div>";
+    }).join("") + (pack.recon.held.length ? '<div style="grid-column:1/-1"><h4>Held for a fix before sending</h4><ul>' + pack.recon.held.map(function (it) {
+      return "<li><b>" + esc(it.customer) + "</b><span>" + esc(it.contract) + " · " + esc(it.reason) + "</span></li>";
+    }).join("") + "</ul></div>" : "");
+
+    renderStrip();
+    var lines = founderText();
+    $("founder").innerHTML = lines.map(function (l) { return "<li>" + esc(l) + "</li>"; }).join("");
+    $("founderMeta").textContent = state.bill.run.period.label + " billing · aging at " + AR.fmtShortDate(state.runDate);
+  }
+
+  function renderStrip() {
+    $("stripData").textContent = isDemo() && billDemo() ? "Demo data" : isDemo() || billDemo() ? "Your data and demo data mixed" : "Your data, kept in this browser";
+  }
+
+  function plural(n, one) { return n + " " + one + (n === 1 ? "" : "s"); }
+
+  function founderText() {
+    var lines = PACK.founderLines(state.bill.run, state.result);
+    if (billDemo()) lines[0] = bMask(lines[0]);
+    for (var i = 1; i < lines.length; i++) lines[i] = mask(lines[i]);
+    return lines;
+  }
+
+  function packDemo() { return billDemo() || isDemo(); }
+  function downloadPack(btn) {
+    var pack = packNow(); if (!pack) return;
+    var label = btn.textContent; btn.textContent = "Preparing…"; btn.disabled = true;
+    var restore = function (t, cls) { btn.textContent = t; if (cls) btn.classList.add(cls); setTimeout(function () { btn.textContent = label; btn.disabled = false; btn.classList.remove("done", "failed"); }, 1400); };
+    loadPDF().then(function (jsPDF) {
+      PACK.pdf(jsPDF, pack, packDemo()).save((packDemo() ? "demo-" : "") + "close-pack-" + pack.period.key + ".pdf");
+      restore("Downloaded", "done");
+    }).catch(function () { restore("Failed", "failed"); alert("Couldn't build the PDF. Try again, or download the CSV."); });
+  }
+
+  function renderBridge() {
+    var br = state.bill.run.bridge;
+    if (!br) {
+      $("bridge").innerHTML = '<p class="sub">Add a “Last month billed” column to the contracts file to see what changed since last month.</p>';
+      return;
+    }
+    var cum = br.last, scale = Math.max(br.last, br.now);
+    br.items.forEach(function (it) { cum += it.delta; scale = Math.max(scale, cum); });
+    scale = scale || 1;
+    var pct = function (v) { return (Math.max(0, v) / scale * 100).toFixed(2) + "%"; };
+    var row = function (who, sub, amtCls, amt, barCls, left, width) {
+      return '<div class="brow' + (amtCls === "tot" && who === "This month" ? " total" : "") + '"><div class="who"><b>' + who + "</b>" + (sub ? "<span>" + sub + "</span>" : "") + '</div><div class="amt ' + amtCls + '">' + amt + "</div>" +
+        '<div class="bar3"><div class="track"><i class="' + barCls + '" style="left:' + left + ";width:" + width + '"></i></div></div></div>';
+    };
+    var html = row("Last month", "Billed on these contracts", "tot", bK(br.last), "base", "0%", pct(br.last));
+    cum = br.last;
+    br.items.forEach(function (it) {
+      var from = Math.min(cum, cum + it.delta);
+      html += row(esc(it.customer), esc(it.contract) + " · " + esc(it.reason), it.delta > 0 ? "up" : "down", signed(it.delta), it.delta > 0 ? "up" : "down", Math.min(from / scale * 100, 99.3).toFixed(2) + "%", pct(Math.abs(it.delta)));
+      cum += it.delta;
+    });
+    html += row("This month", state.bill.run.invoices.length + " invoices", "tot", bK(br.now), "base", "0%", pct(br.now));
+    $("bridge").innerHTML = html;
+  }
+
+  function renderInvoices() {
+    var b = state.bill, run = b.run;
+    var list = run.invoices.slice().sort(function (x, y) { return (y.needsYou - x.needsYou) || x.customer.localeCompare(y.customer); });
+    $("invCards").innerHTML = list.map(function (inv) {
+      var e = b.emails[inv.id];
+      var facts = esc(inv.number) + " · " + bMoney(inv.total) + " · " + inv.lines.length + " line" + (inv.lines.length === 1 ? "" : "s") + " · due " + esc(AR.fmtShortDate(inv.dueDate));
+      var summary = '<summary><div class="sl"><div class="cname">' + esc(inv.customer) + "</div>" +
+        '<div class="facts num">' + facts + "</div>" +
+        (inv.email ? '<div class="contact">' + esc(inv.email) + "</div>" : "") +
+        '<div class="preview">' + esc(inv.flags[0] || inv.notes[0] || "Ready to send") + "</div></div>" +
+        '<div class="sr2">' + (inv.needsYou ? '<span class="tag you">Needs action</span>' : "") + kindBadge(inv) +
+        '<svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div></summary>';
+      var flags = inv.flags.length ? '<ul class="flags">' + inv.flags.map(function (f) { return "<li>" + esc(f) + "</li>"; }).join("") + "</ul>" : "";
+      if (inv.flags.some(function (f) { return /^PO required/.test(f); })) flags += '<div class="needs"><b>PO needed</b><p>Their AP will likely reject the invoice without one.</p>' + fixForm("po", inv.id, "bill", "PO number", "PO-12345") + "</div>";
+      var notes = inv.notes.length ? '<ul class="notes">' + inv.notes.map(function (f) { return "<li>" + esc(f) + "</li>"; }).join("") + "</ul>" : "";
+      var lines = '<table class="lines num"><thead><tr><th>Line</th><th class="r hide-sm">Qty</th><th class="r hide-sm">Rate</th><th class="r">Amount</th></tr></thead><tbody>' +
+        inv.lines.map(function (l) {
+          return "<tr><td>" + esc(l.description) + '</td><td class="r hide-sm">' + l.qty.toLocaleString("en-US") + '</td><td class="r hide-sm">' + bMoney(l.rate) + '</td><td class="r">' + bMoney(l.amount) + "</td></tr>";
+        }).join("") + '</tbody><tfoot><tr><td>Total' + (inv.pos.length ? " · PO " + esc(inv.pos.join(", ")) : "") + '</td><td class="hide-sm"></td><td class="hide-sm"></td><td class="r">' + bMoney(inv.total) + "</td></tr></tfoot></table>";
+      var view = '<button class="btn" type="button" data-view="' + inv.id + '">Download PDF</button>';
+      var mail = inv.email
+        ? '<div class="addr"><b>To</b> ' + esc(e.to) + (e.cc ? " · <b>Cc</b> " + esc(e.cc) : "") + "</div>" +
+          '<label class="flabel">Subject<input class="subj" data-bid="' + inv.id + '" value="' + esc(e.subject) + '"></label>' +
+          '<label class="flabel">Cover email<textarea data-bid="' + inv.id + '" spellcheck="true">' + esc(e.body) + "</textarea></label>" +
+          '<div class="ft"><button class="btn primary" type="button" data-bcopy="' + inv.id + '">Copy email</button>' +
+          '<a class="btn" target="_blank" rel="noopener" data-bgmail="' + inv.id + '" href="' + gmailUrl(e) + '">Open in Gmail</a>' + view +
+          (b.dirty[inv.id] ? '<button class="btn ghost" type="button" data-brevert="' + inv.id + '">Discard edits</button>' : "") +
+          '<span class="src">Template' + (b.dirty[inv.id] ? " · edited" : "") + "</span></div>"
+        : '<div class="needs"><b>Needs action</b><p>No billing email on the contract. Add one here to write the cover email, and update the record too.</p>' +
+          fixForm("email", inv.id, "bill", "Billing email", "ap@company.com") + '</div><div class="ft">' + view + "</div>";
+      return '<details class="card' + (inv.needsYou ? " you" : "") + '" data-inv="' + inv.id + '"' + (b.open[billKey(inv)] ? " open" : "") + ">" + summary +
+        '<div class="bd">' + flags + notes + lines + mail + "</div></details>";
+    }).join("");
+    document.querySelectorAll("#invCards textarea").forEach(fit);
+  }
+
+  function renderBillRules() {
+    if ($("billRules").dataset.done) return;
+    $("billRules").dataset.done = "1";
+    $("billRules").innerHTML = "<ul>" +
+      "<li><b>Who's billed:</b> contracts active in the month and on their cycle, billed in advance. Monthly bills every month, quarterly every third month from the start month, annual in the start month each year.</li>" +
+      "<li><b>Proration:</b> a contract that starts or ends partway through its billing cycle (month, quarter or year) is billed for the days it covers.</li>" +
+      "<li><b>Usage:</b> usage units × unit price, as its own line.</li>" +
+      "<li><b>One invoice per customer:</b> a line for each contract (contracts on different payment terms get separate invoices, since each invoice has one due date), numbered INV-YYMM-001 onwards, issued on the last day of the month and due on the customer's terms (Net 30 if blank).</li>" +
+      "<li><b>Checked before sending:</b> no billing email, a PO required but missing, a monthly bill up or down 25% or more on last month with no new, final or cycle reason, duplicate contracts, and rows with no start date or an unknown frequency.</li>" +
+      "<li><b>Heads-up:</b> contracts ending within 60 days get a renewal note.</li>" +
+      "<li><b>Bridge:</b> last month's total to this month's, with a reason for every change: new, ended, price change, usage, or a quarterly or annual bill.</li>" +
+      "<li><b>Hand-off:</b> the invoices join the aging run as open invoices, so the fortnightly chasers pick them up once they fall due. The QuickBooks file is laid out for QuickBooks Online's invoice import.</li>" +
+      "</ul>";
+  }
+
+  function renderHandoff() {
+    var run = state.bill.run;
+    if (!run) return;
+    var ready = run.invoices.filter(function (i) { return !i.needsYou; }).length;
+    var all = ready === run.invoices.length;
+    $("handoff").innerHTML = "<p><b>" + (all ? "All " + ready : ready + " of " + run.invoices.length) + " ready.</b> " +
+      (all ? "Import them into QuickBooks or Stripe" : "Check the flagged ones below, then import them into QuickBooks or Stripe") + " and add them to the aging run.</p>" +
+      '<button class="btn" type="button" id="dlPdfs">All PDFs</button>' +
+      '<button class="btn" type="button" id="dlQbo">QuickBooks CSV</button>' +
+      '<button class="btn" type="button" id="dlAr" title="The invoices as rows for the aging run\'s own upload">AR rows CSV</button>' +
+      '<button class="btn primary" type="button" id="toAging">Add to aging run</button>';
+    $("dlPdfs").onclick = function (e) { markIssued(run.invoices); downloadPDF(run.invoices, "invoices-" + run.period.key + ".pdf", e.target); };
+    // Demo files are labelled and keep the page's $xx masking.
+    var pre = billDemo() ? "demo-" : "", opts = { mask: billDemo() };
+    $("dlQbo").onclick = function () { markIssued(run.invoices); download(pre + "invoices-" + run.period.key + "-quickbooks.csv", BILL.importCSV(run, opts)); };
+    $("dlAr").onclick = function () { markIssued(run.invoices); download(pre + "invoices-" + run.period.key + "-ar-rows.csv", BILL.arCSV(run, opts)); };
+    $("toAging").onclick = sendToAging;
+    var b = state.billed;
+    $("sentNote").hidden = !(b && b.key === run.period.key);
+    if (b) $("sentNote").textContent = "Added: " + b.count + " invoices are in the aging run and the close pack. Move the run date past " + AR.fmtDate(b.firstDue) + " to watch them come due.";
+  }
+
+  function sendToAging() {
+    var run = state.bill.run;
+    if (!run || !run.invoices.length) return;
+    markIssued(run.invoices);
+    state.billed = {
+      key: run.period.key, label: run.period.label, count: run.invoices.length, demo: billDemo(),
+      firstDue: Math.min.apply(null, run.invoices.map(function (i) { return i.dueDate; })),
+      records: BILL.arRecords(run)
+    };
+    runAnalysis();
+    renderHandoff();
+    $("chase").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function billTemplate() {
+    return DEMO.CONTRACT_HEADERS.join(",") + "\n" +
+      "C-001,Customer A,billing@customer-a.example,,Platform subscription,4000.00,Monthly,2026-01-01,2026-12-31,PO-1001,Yes,,,Net 30,4000.00\n" +
+      "C-002,Customer B,billing@customer-b.example,payables@customer-b.example,Platform subscription annual,48000.00,Annual,2026-04-01,,,,,,Net 45,\n" +
+      "C-003,Customer B,billing@customer-b.example,payables@customer-b.example,Onboarding fee,5000.00,One-off,2026-04-01,,,,,,Net 45,\n" +
+      "C-004,Customer C,billing@customer-c.example,,Platform subscription,8000.00,Monthly,2026-03-01,,,,1240,1.50,Net 30,9860.00\n";
+  }
+
+  function renderBillGuide() {
+    var need = function (f) {
+      return f.required ? '<span class="need req">Required</span>' : f.recommended ? '<span class="need rec">Recommended</span>' : '<span class="need opt">Optional</span>';
+    };
+    var names = {};
+    DEMO.CONTRACT_HEADERS.forEach(function (h) { var k = BILL.autoMap([h]); Object.keys(k).forEach(function (x) { names[x] = h; }); });
+    $("billGuideTable").innerHTML = "<table><thead><tr><th>Column</th><th></th><th>What it's used for</th></tr></thead><tbody>" +
+      BILL.FIELDS.map(function (f) {
+        return '<tr><td class="f">' + esc(names[f.key] || f.label) + "</td><td>" + need(f) + '</td><td class="u">' + esc(f.use) + "</td></tr>";
+      }).join("") + "</tbody></table>";
+  }
+
+  function loadBillFile(file) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      var p = AR.parseCSV(reader.result);
+      if (!p.headers.length || !p.rows.length) { $("billMapper").innerHTML = '<div class="mapper"><p class="err">That file has no rows.</p></div>'; return; }
+      state.bill.pending = { headers: p.headers, rows: p.rows, name: file.name };
+      renderBillMapper(p.headers, BILL.autoMap(p.headers), file.name, p.rows.length);
+    };
+    reader.readAsText(file);
+  }
+
+  function renderBillMapper(headers, map, name, n) {
+    var opts = function (sel) {
+      return '<option value="">Not in file</option>' + headers.map(function (h) {
+        return '<option value="' + esc(h) + '"' + (h === sel ? " selected" : "") + ">" + esc(h) + "</option>";
+      }).join("");
+    };
+    $("billMapper").innerHTML =
+      '<div class="mapper"><h3>Match columns: ' + esc(name) + "</h3>" +
+      "<p>" + n + " rows. Matched from your headers; check anything marked required. The column guide at the bottom says what each one does.</p>" +
+      '<div class="mapgrid">' + BILL.FIELDS.map(function (f) {
+        return "<label>" + esc(f.label) + (f.required ? ' <span class="req">required</span>' : "") +
+          '<select data-bk="' + f.key + '">' + opts(map[f.key]) + "</select></label>";
+      }).join("") + dateSelect("bDateOrder", state.bill.pending.rows, [map.start, map.end]) + "</div>" +
+      '<div class="actions"><button class="btn primary" id="bApply" type="button">Run billing</button>' +
+      '<button class="btn ghost" id="bCancel" type="button">Cancel</button><span class="err" id="bErr"></span></div></div>';
+    $("bApply").onclick = function () {
+      var m = {};
+      document.querySelectorAll("#billMapper select").forEach(function (s) { if (s.value && s.dataset.bk) m[s.dataset.bk] = s.value; });
+      var miss = BILL.missingRequired(m);
+      if (miss.length) { $("bErr").textContent = "Still needed: " + miss.join(", "); return; }
+      var b = state.bill, pd = b.pending;
+      b.source = "file"; b.fileName = pd.name; b.dateOrder = $("bDateOrder").value; b.headers = pd.headers; b.rows = pd.rows; b.map = m;
+      $("billMapper").innerHTML = "";
+      runBilling();
+      $("billGuide").open = false;
+      $("bill").scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    $("bCancel").onclick = function () { $("billMapper").innerHTML = ""; };
+    $("billMapper").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  /* Invoice PDFs are drawn in the browser and saved directly. jsPDF is vendored and loaded on first use. */
+  var pdfLib = null;
+  function loadPDF() {
+    if (window.jspdf) return Promise.resolve(window.jspdf.jsPDF);
+    if (!pdfLib) pdfLib = new Promise(function (ok, fail) {
+      var s = document.createElement("script");
+      s.src = "vendor/jspdf-2.5.1.umd.min.js";
+      s.onload = function () { ok(window.jspdf.jsPDF); };
+      // Forget the failed attempt so the next click tries again.
+      s.onerror = function () { pdfLib = null; s.remove(); fail(new Error("Couldn't load the PDF generator. Check your connection and try again.")); };
+      document.head.appendChild(s);
+    });
+    return pdfLib;
+  }
+  function downloadPDF(invoices, name, btn) {
+    var label = btn && btn.textContent;
+    if (btn) { btn.textContent = "Preparing…"; btn.disabled = true; }
+    // Whatever happens, the button comes back.
+    var restore = function (text, cls) {
+      if (!btn) return;
+      btn.textContent = text; if (cls) btn.classList.add(cls);
+      setTimeout(function () { btn.textContent = label; btn.disabled = false; btn.classList.remove("done", "failed"); }, 1400);
+    };
+    loadPDF().then(function (jsPDF) {
+      INVPDF.build(jsPDF, invoices, state.bill.run, billDemo(), state.settings.companyName).save(name);
+      restore("Downloaded", "done");
+    }).catch(function (err) {
+      restore("Failed", "failed");
+      alert(err && /PDF generator/.test(err.message) ? err.message : "Couldn't build the PDF. Try again, or download the CSV instead.");
+    });
+  }
+
+  // ---------- Events ----------
+
+  // A draft still signed with the placeholder name doesn't leave the page: Copy and Open in Gmail
+  // open the signature settings first (or point at the message, if the name is set but the text was edited).
+  var PLACEHOLDERS = [AR.DEFAULT_SETTINGS.senderName, AR.DEFAULT_SETTINGS.founderName];
+  document.addEventListener("click", function (e) {
+    var t = e.target.closest && e.target.closest("[data-copy],[data-gmail],[data-bcopy],[data-bgmail]");
+    if (!t) return;
+    var ds = t.dataset;
+    var d = ds.copy != null ? state.drafts[ds.copy] : ds.gmail != null ? state.drafts[ds.gmail] : state.bill.emails[ds.bcopy != null ? ds.bcopy : ds.bgmail];
+    var name = PLACEHOLDERS.filter(function (n) { return d && d.body.indexOf(n) !== -1; })[0];
+    if (!name) return;
+    e.preventDefault(); e.stopPropagation();
+    var founder = name === AR.DEFAULT_SETTINGS.founderName;
+    var setting = founder ? state.settings.founderName : state.settings.senderName;
+    if (setting !== name) {
+      // The setting is filled in; this draft's text still has the old sign-off.
+      var ta = t.closest(".card").querySelector("textarea");
+      if (ta) { ta.focus(); var at = ta.value.indexOf(name); if (at !== -1) ta.setSelectionRange(at, at + name.length); }
+      return;
+    }
+    var m = $("sigMsg");
+    m.textContent = founder ? "Tier 4 emails go out from the founder. Add their name and role, then send again." : "Add the name and role to sign emails with, then send again.";
+    m.hidden = false;
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    $("settings").open = true;
+    $(founder ? "fName" : "sName").focus({ preventScroll: true });
+  }, true);
+
+  // Missing email or PO typed into a Needs action card.
+  document.addEventListener("submit", function (e) {
+    var f = e.target;
+    if (!f.classList || !f.classList.contains("fix")) return;
+    e.preventDefault();
+    var v = f.querySelector("input").value.trim(), field = f.dataset.field, err = f.querySelector(".err");
+    if (field === "email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) { err.textContent = "That doesn't look like an email address."; err.hidden = false; return; }
+    if (!v) return;
+    var fixes, key;
+    if (f.dataset.scope === "ar") {
+      var c = state.result.customers[f.dataset.fid];
+      fixes = state.fixes; key = editKey(c);
+      state.open[key] = true;
+    } else {
+      var inv = state.bill.run.invoices[f.dataset.fid];
+      fixes = state.bill.fixes; key = billSrc() + "|" + inv.customer.toLowerCase();
+      state.bill.open[billKey(inv)] = true;
+    }
+    fixes[key] = Object.assign({}, fixes[key]);
+    fixes[key][field] = v;
+    if (f.dataset.scope === "ar") runAnalysis(); else runBilling();
+  });
+
+  document.addEventListener("click", function (e) {
+    var j = e.target.closest && e.target.closest("[data-jump]");
+    if (j) $(j.dataset.jump).scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+
+  $("runDate").addEventListener("change", function (e) {
+    var t = AR.parseDate(e.target.value);
+    if (t == null) return;
+    state.runDate = t;
+    runAnalysis();
+  });
+  $("file").addEventListener("change", function (e) { if (e.target.files[0]) loadFile(e.target.files[0]); e.target.value = ""; });
+  $("uploadPanel").addEventListener("keydown", function (e) {
+    if (e.target.hasAttribute && e.target.hasAttribute("data-pick") && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); $("file").click(); }
+  });
+  document.querySelectorAll(".seg").forEach(function (seg) {
+    seg.addEventListener("click", function (e) {
+      var d = e.target.dataset || {}, list = seg.dataset.list;
+      if (d.sort) {
+        state.sort[list] = d.sort;
+        seg.querySelectorAll("[data-sort]").forEach(function (b) { b.setAttribute("aria-pressed", b.dataset.sort === d.sort); });
+      } else return;
+      if (seg.dataset.list === "aging") renderAging(); else renderCards();
+    });
+  });
+  $("tabDemo").addEventListener("click", function () { setTab("demo"); });
+  $("tabUpload").addEventListener("click", function () { setTab("upload"); });
+
+  ["sName", "sRole", "fName", "fRole", "cName"].forEach(function (id, i) {
+    $(id).value = state.settings[["senderName", "senderRole", "founderName", "founderRole", "companyName"][i]];
+  });
+  $("saveSign").addEventListener("click", function () {
+    state.settings.senderName = $("sName").value.trim() || AR.DEFAULT_SETTINGS.senderName;
+    state.settings.senderRole = $("sRole").value.trim() || AR.DEFAULT_SETTINGS.senderRole;
+    state.settings.founderName = $("fName").value.trim() || AR.DEFAULT_SETTINGS.founderName;
+    state.settings.founderRole = $("fRole").value.trim() || AR.DEFAULT_SETTINGS.founderRole;
+    state.settings.companyName = $("cName").value.trim() || AR.DEFAULT_SETTINGS.companyName;
+    $("settings").open = false;
+    $("sigMsg").hidden = true;
+    runAnalysis();
+    if (state.bill.run) runBilling();
+  });
+
+  // Billing events
+  $("billMonth").addEventListener("change", function (e) {
+    var P = BILL.periodOf(e.target.value);
+    if (!P) return;
+    state.bill.period = P.start;
+    if (billDemo()) loadBillDemo(); else runBilling();
+  });
+  $("billFile").addEventListener("change", function (e) { if (e.target.files[0]) loadBillFile(e.target.files[0]); e.target.value = ""; });
+  document.addEventListener("keydown", function (e) {
+    if (e.target.hasAttribute && e.target.hasAttribute("data-bpick") && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); $("billFile").click(); }
+  });
+  $("invCards").addEventListener("toggle", function (e) {
+    var el = e.target; if (!el.dataset || el.dataset.inv == null) return;
+    state.bill.open[billKey(state.bill.run.invoices[el.dataset.inv])] = el.open;
+    if (el.open) el.querySelectorAll("textarea").forEach(fit);
+  }, true);
+  $("invCards").addEventListener("input", function (e) {
+    var id = e.target.dataset.bid; if (id == null) return;
+    var d = state.bill.emails[id];
+    if (e.target.tagName === "TEXTAREA") { d.body = e.target.value; fit(e.target); } else d.subject = e.target.value;
+    state.bill.dirty[id] = true;
+    state.bill.edits[billKey(state.bill.run.invoices[id])] = { subject: d.subject, body: d.body };
+    var a = document.querySelector('[data-bgmail="' + id + '"]'); if (a) a.href = gmailUrl(d);
+  });
+  $("invCards").addEventListener("click", function (e) {
+    var t = e.target;
+    if (t.dataset.view != null) { var vi = state.bill.run.invoices[+t.dataset.view]; markIssued([vi]); downloadPDF([vi], vi.number + ".pdf", t); return; }
+    if (t.dataset.brevert != null) {
+      var bi = state.bill.run.invoices[+t.dataset.brevert], be = BILL.coverEmail(bi, state.bill.run, state.settings);
+      if (billDemo()) { be.subject = bMask(be.subject); be.body = bMask(be.body); }
+      delete state.bill.edits[billKey(bi)]; delete state.bill.dirty[bi.id];
+      state.bill.emails[bi.id] = be;
+      renderInvoices();
+      return;
+    }
+    if (t.dataset.bgmail != null) markIssued([state.bill.run.invoices[+t.dataset.bgmail]]);
+    if (t.dataset.bcopy != null) { markIssued([state.bill.run.invoices[+t.dataset.bcopy]]); var d = state.bill.emails[t.dataset.bcopy]; copy("Subject: " + d.subject + "\n\n" + d.body, t); }
+  });
+
+  // Cards are collapsed by default; remember which are open across re-renders.
+  $("cards").addEventListener("toggle", function (e) {
+    var el = e.target; if (!el.dataset || el.dataset.card == null) return;
+    state.open[editKey(state.result.customers[el.dataset.card])] = el.open;
+    if (el.open) el.querySelectorAll("textarea").forEach(fit);
+  }, true);
+
+  $("cards").addEventListener("keydown", function (e) {
+    if ((e.key === " " || e.key === "Enter") && e.target.dataset && e.target.dataset.act != null) { e.preventDefault(); e.target.click(); }
+  });
+
+  $("cards").addEventListener("input", function (e) {
+    var id = e.target.dataset.id; if (id == null) return;
+    var d = state.drafts[id];
+    if (e.target.tagName === "TEXTAREA") { d.body = e.target.value; fit(e.target); } else d.subject = e.target.value;
+    state.dirty[id] = true;
+    d.editedFor = state.runDate;
+    state.edits[editKey(state.result.customers[id])] = { subject: d.subject, body: d.body, runDate: state.runDate };
+    var a = document.querySelector('[data-gmail="' + id + '"]'); if (a) a.href = gmailUrl(d);
+  });
+  $("cards").addEventListener("click", function (e) {
+    var act = e.target.closest && e.target.closest("[data-act]");
+    if (act) {
+      // Handle the tick ourselves so the click doesn't also open or close the card.
+      e.preventDefault();
+      var c = state.result.customers[act.dataset.act];
+      writeTick(c, c.actioned ? null : AR.isoDate(state.runDate));
+      applyTicks(state.result);
+      render();
+      var again = document.querySelector('[data-act="' + c.id + '"]'); if (again) again.focus();
+      return;
+    }
+    if (e.target.dataset.revert != null) {
+      var rc = state.result.customers[e.target.dataset.revert];
+      delete state.edits[editKey(rc)]; delete state.dirty[rc.id];
+      state.drafts[rc.id] = maskDraft(AR.templateDraft(rc, state.runDate, state.settings));
+      renderCards();
+      return;
+    }
+    var id = e.target.dataset.copy; if (id == null) return;
+    var d = state.drafts[id];
+    copy("Subject: " + d.subject + "\n\n" + d.body, e.target);
+  });
+  $("copyFounder").addEventListener("click", function (e) { if (state.result && state.bill.run) copy(founderText().join("\n"), e.target); });
+  $("dlPack").addEventListener("click", function (e) { downloadPack(e.target); });
+  $("dlPackCsv").addEventListener("click", function () {
+    var pack = packNow(); if (!pack) return;
+    markIssued(state.bill.run.invoices);
+    download((packDemo() ? "demo-" : "") + "close-pack-" + pack.period.key + ".csv", PACK.csv(pack, { mask: packDemo() }));
+  });
+  $("copyScript").addEventListener("click", function (e) { if (scriptText) copy(scriptText, e.target); });
+  $("dlScript").addEventListener("click", function () {
+    if (!scriptText) return;
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([scriptText], { type: "text/javascript" }));
+    a.download = "Code.gs"; a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  });
+
+  renderGuide();
+  renderBillGuide();
+  loadDemo();
+  loadBillDemo();
+  loadScript();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { document.querySelectorAll(".cards textarea").forEach(fit); });
+})();

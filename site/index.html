@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Billing &amp; collections · prototype by Jake Makking-Robinson</title>
+<meta name="description" content="Drop in your contracts. Get month-end invoices, who's overdue, and the email to send each of them. Billing, chasing and the accountant hand-off from one file. A working prototype by Jake Makking-Robinson for Different's founder's office.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://jakem-r.github.io/different-billing/">
+<meta property="og:title" content="Billing &amp; collections for a founder's office">
+<meta property="og:description" content="Month-end invoices, who's overdue and the email to send each of them, plus a close pack for the accountants. A working prototype by Jake Makking-Robinson.">
+<meta property="og:image" content="https://jakem-r.github.io/different-billing/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<!-- Set to the deployed Worker URL to draft with Claude. Empty means templates only. -->
+<meta name="worker-url" content="">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='16' fill='%23111111'/><rect x='8' y='17' width='4' height='7' rx='1' fill='%23F2F2F1'/><rect x='14' y='12' width='4' height='12' rx='1' fill='%23F2F2F1'/><rect x='20' y='8' width='4' height='16' rx='1' fill='%23D9663F'/></svg>">
+<style>
+:root{
+  /* Visual language sampled by eye from screenshots; hex values approximate. See README. */
+  --bg:#FFFFFF; --grey:#F2F2F1; --chip:#EFEFEF;
+  --line:#E4E4E4; --line-2:#D4D4D2;
+  --ink:#111111; --ink-2:#4A4A4A; --ink-3:#7A7A77;
+  --rust:#D9663F; --maroon:#6E2A22;
+  --ok:#E6F2E8; --ok-ink:#1F5F33;
+  --amber:#FBF0D9; --amber-ink:#7A5310;
+  --red:#F6E3DF; --red-ink:#8A2E22;
+  /* Days past due: monochrome, then the accent for the oldest money. */
+  --b-current:#DCDCD8; --b-1:#ABABA6; --b-31:#6E6E6A; --b-61:#D9663F; --b-90:#6E2A22;
+  --serif:"Instrument Serif",Georgia,"Times New Roman",serif;
+  --sans:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --r:18px; --r-sm:10px;
+  --shadow:0 1px 2px rgba(17,17,17,.04),0 4px 16px rgba(17,17,17,.04);
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;scroll-padding-top:72px}
+body{margin:0;background:var(--bg);color:var(--ink-2);font:15px/1.55 var(--sans);font-feature-settings:"cv11" 1}
+a{color:var(--ink);text-underline-offset:3px;text-decoration-color:var(--line-2)}
+a:hover{text-decoration-color:currentColor}
+button,input,select,textarea{font:inherit;color:inherit}
+.wrap{max-width:1040px;margin:0 auto;padding:0 32px}
+.num,.figures,.aging,.reg,.buckets,.lines,.bridge{font-variant-numeric:tabular-nums}
+.mono,.eyebrow{font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)}
+.eyebrow{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;margin:0 0 14px}
+.eyebrow b{white-space:nowrap}
+.eyebrow b{color:var(--ink);font-weight:500}
+
+/* Demo strip */
+.strip{background:var(--ink);color:#E9E9E7;font:500 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase}
+.strip .wrap{display:flex;align-items:center;gap:8px;min-height:34px;padding-top:8px;padding-bottom:8px}
+.strip a{color:#fff;text-decoration-color:rgba(255,255,255,.4)}
+.strip .dot{width:6px;height:6px;border-radius:50%;background:var(--rust);flex:none}
+.strip .gh{margin-left:auto;white-space:nowrap}
+
+/* Hero */
+.hero{padding:56px 0 40px}
+.hero h1{font:400 58px/1.02 var(--serif);letter-spacing:-.02em;color:var(--ink);margin:0;max-width:980px;text-wrap:balance}
+.hero h1 em{font-style:italic}
+.lede{margin:18px 0 0;font-size:18px;color:var(--ink-2);max-width:640px}
+.flow{list-style:none;margin:32px 0 0;padding:0;display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:stretch;gap:10px}
+.flow li.step{border:1px solid var(--line);border-radius:var(--r);background:var(--bg);padding:16px 18px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:6px}
+.flow .step a{text-decoration:none;color:inherit;display:flex;flex-direction:column;gap:6px}
+.flow .step:hover{border-color:var(--line-2)}
+.flow .k{display:flex;align-items:center;gap:8px}
+.flow .k b{font:500 11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)}
+.flow .k .chip{font:600 13px var(--sans);letter-spacing:0;text-transform:none;color:var(--ink);background:var(--chip);border-radius:999px;padding:3px 10px}
+.flow p{margin:0;font-size:14px;color:var(--ink-2)}
+.flow li.arr{align-self:center;color:var(--ink-3);font-size:18px;list-style:none}
+.works{margin:16px 0 0;font-size:13px;color:var(--ink-3)}
+
+/* Run bar */
+.runbar{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.92);backdrop-filter:saturate(1.4) blur(8px);-webkit-backdrop-filter:saturate(1.4) blur(8px);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.runbar .wrap{display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px;padding-top:10px;padding-bottom:10px}
+.field{display:flex;align-items:center;gap:8px;font:500 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}
+.field input{height:34px;border:1px solid var(--line-2);border-radius:999px;padding:0 12px;background:var(--bg);font:13px var(--sans);letter-spacing:0;text-transform:none;color:var(--ink)}
+.runbar .spacer{flex:1}
+.signoff{position:relative}
+.signoff summary{list-style:none}
+.signoff summary::-webkit-details-marker{display:none}
+.pop{position:absolute;right:0;top:44px;width:300px;background:var(--bg);border:1px solid var(--line);border-radius:var(--r);padding:18px;display:grid;gap:10px;z-index:30;box-shadow:0 12px 32px rgba(17,17,17,.12)}
+.pop label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ink-2);font-weight:500}
+.pop input{height:34px;border:1px solid var(--line-2);border-radius:var(--r-sm);padding:0 10px;font-size:13px}
+.popmsg{margin:0;padding:8px 10px;border-radius:var(--r-sm);background:var(--amber);color:var(--amber-ink);font-size:12px;font-weight:500}
+
+/* Buttons: black pill primary, white pill secondary */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:34px;padding:0 16px;border-radius:999px;border:1px solid var(--line-2);background:var(--bg);font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap;text-decoration:none;color:var(--ink)}
+.btn:hover{border-color:var(--ink)}
+.btn.primary{background:var(--ink);border-color:var(--ink);color:#fff}
+.btn.primary:hover{background:#2B2B2B}
+.btn.ghost{border-color:transparent;background:none;color:var(--ink-2)}
+.btn.ghost:hover{background:var(--grey)}
+.btn:disabled{opacity:.6;cursor:default}
+.btn:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible,a:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--rust);outline-offset:2px}
+.btn.done{border-color:var(--ok-ink);color:var(--ok-ink);background:var(--ok)}
+.btn.failed{border-color:var(--red-ink);color:var(--red-ink)}
+
+/* Bands */
+.band{padding:72px 0}
+.band.grey{background:var(--grey)}
+.band + .band{border-top:1px solid var(--line)}
+h2{font:400 40px/1.08 var(--serif);letter-spacing:-.015em;color:var(--ink);margin:0}
+h3{font:600 15px/1.3 var(--sans);color:var(--ink);margin:0}
+.sub{color:var(--ink-2);margin:10px 0 24px;font-size:15px;max-width:680px}
+.sub.small{font-size:13px}
+.panel{border:1px solid var(--line);border-radius:var(--r);background:var(--bg);box-shadow:var(--shadow);overflow:hidden}
+.panel>.ph{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:14px 20px;border-bottom:1px solid var(--line)}
+.panel>.ph .spacer{flex:1}
+.panel>.pb{padding:16px 20px 20px}
+.jump{font-size:13px;margin-top:16px;display:inline-block}
+
+/* Pills */
+.pill{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:999px;font-size:12px;font-weight:500;white-space:nowrap;background:var(--chip);color:var(--ink)}
+.pill.demo{background:var(--chip);color:var(--ink)}
+.pill.file{background:var(--ink);color:#fff}
+.pill.ok{background:var(--ok);color:var(--ok-ink)}
+.pill.amber{background:var(--amber);color:var(--amber-ink)}
+.pill.red{background:var(--red);color:var(--red-ink)}
+.pill.dark{background:var(--ink);color:#fff}
+
+/* Headline figures */
+.figures{display:flex;flex-wrap:wrap;gap:12px 44px;margin-top:22px}
+.fig{display:flex;flex-direction:column;gap:2px}
+.fig .k{font:500 11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)}
+.fig .v{font-size:22px;font-weight:600;color:var(--ink);letter-spacing:-.01em}
+.callouts{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}
+.callout{font-size:13px;padding:6px 12px;border-radius:999px;background:var(--bg);border:1px solid var(--line);color:var(--ink-2)}
+.band:not(.grey) .callout{background:var(--grey);border-color:transparent}
+.callout b{color:var(--ink)}
+.callout.you{background:var(--ink);border-color:var(--ink);color:#E9E9E7}
+.band:not(.grey) .callout.you{background:var(--ink)}
+.callout.you b{color:#fff}
+.callout button.jump{border:0;background:none;padding:0;margin:0;font:inherit;color:inherit;cursor:pointer;text-decoration:underline;text-decoration-color:var(--line-2);text-underline-offset:3px}
+.callout .link{border:0;background:none;padding:0;margin-left:6px;color:inherit;text-decoration:underline;cursor:pointer;font-size:13px}
+.tool{margin-top:32px}
+
+/* Upload */
+.upload{padding:40px 0;background:var(--grey);border-bottom:1px solid var(--line)}
+.ugrid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.drop{border:1.5px dashed var(--line-2);border-radius:var(--r);padding:24px 20px;text-align:center;background:var(--bg);transition:border-color .15s,background .15s}
+.drop.over{border-color:var(--rust);background:#FDF3EF}
+.drop h3{margin:6px 0 4px;font:400 26px/1.1 var(--serif);color:var(--ink)}
+.drop p{margin:0 0 16px;font-size:13px;color:var(--ink-2)}
+.drop .row{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+.loaded{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px solid var(--line);border-radius:var(--r);background:var(--bg);padding:14px 18px;font-size:13px;color:var(--ink-2)}
+.loaded b{color:var(--ink)}
+.loaded .spacer{flex:1}
+.mapper{border:1px solid var(--line);border-radius:var(--r);background:var(--bg);padding:20px;margin-top:16px}
+.mapper h3{margin:0 0 4px}
+.mapper p{margin:0 0 16px;font-size:13px;color:var(--ink-2)}
+.mapgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px 16px}
+.mapgrid label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ink-2);font-weight:500}
+.mapgrid label .req{color:var(--rust);font-weight:600}
+.mapgrid select{height:34px;border:1px solid var(--line-2);border-radius:var(--r-sm);background:var(--bg);padding:0 8px;font-size:13px}
+.mapper .actions{display:flex;gap:8px;align-items:center;margin-top:16px;flex-wrap:wrap}
+.err{color:var(--red-ink);font-size:13px}
+details.guide{margin-top:12px;border:1px solid var(--line);border-radius:var(--r);background:var(--bg)}
+details.guide>summary{cursor:pointer;padding:14px 18px;font-size:13px;font-weight:600;color:var(--ink);list-style:none}
+details.guide>summary::-webkit-details-marker{display:none}
+details.guide>summary::after{content:"+";float:right;color:var(--ink-3);font-weight:400}
+details.guide[open]>summary::after{content:"–"}
+details.guide>.sub{padding:0 18px;margin:0 0 12px;font-size:13px}
+details.guide>.sub.small{font-size:12px;color:var(--ink-3);margin:12px 0 16px}
+.gtable{padding:0 18px;overflow-x:auto}
+.gtable table{width:100%;border-collapse:collapse;font-size:13px;min-width:520px}
+.gtable th{text-align:left;font:500 10px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);padding:8px;border-bottom:1px solid var(--line);white-space:nowrap}
+.gtable td{padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:top;color:var(--ink-2)}
+.gtable th:first-child,.gtable td:first-child{padding-left:0}
+.gtable td.f{color:var(--ink);font-weight:500;white-space:nowrap}
+.need{display:inline-flex;height:20px;align-items:center;padding:0 8px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap}
+.need.req{background:var(--ink);color:#fff}
+.need.rec{background:var(--chip);color:var(--ink)}
+.need.opt{color:var(--ink-3)}
+
+/* Tabs */
+.tabs{display:inline-flex;padding:3px;background:var(--grey);border:1px solid var(--line);border-radius:999px;gap:2px}
+.tabs button{height:28px;padding:0 14px;border:0;border-radius:999px;background:none;font-size:13px;font-weight:500;color:var(--ink-2);cursor:pointer;white-space:nowrap}
+.tabs button[aria-selected="true"]{background:var(--ink);color:#fff}
+
+/* Sort control */
+.seg{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.seg span{margin-right:2px}
+.seg button{height:28px;padding:0 12px;border:1px solid var(--line);border-radius:999px;background:var(--bg);font-size:12px;font-weight:500;color:var(--ink-2);cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--ink);border-color:var(--ink);color:#fff}
+.sm{display:none}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+
+/* Aging */
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--ink-2);padding:12px 20px 0}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.agewrap{padding:4px 20px 8px;overflow-x:auto}
+.aging{width:100%;border-collapse:collapse;font-size:13px}
+.aging th{font:500 10px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);text-align:right;padding:10px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+.aging th:first-child,.aging td:first-child{text-align:left;padding-left:0}
+.aging td{padding:12px 8px;border-bottom:1px solid var(--line);text-align:right;vertical-align:middle;white-space:nowrap;color:var(--ink)}
+.aging td.name{white-space:normal;min-width:240px}
+.aging td.name .n{font-weight:600;overflow-wrap:anywhere}
+.aging td.name .meta{display:flex;gap:6px;align-items:center;margin-top:3px;font-size:11px;color:var(--ink-3);flex-wrap:wrap}
+.aging td.zero{color:var(--line-2)}
+.aging td.tot{font-weight:600}
+.aging td.barcell{width:150px;padding-right:0}
+.aging tfoot td{border-bottom:none;font-weight:600;color:var(--ink)}
+.bar{display:flex;height:10px;border-radius:5px;overflow:hidden;background:var(--grey)}
+.bar span{display:block;height:100%}
+.bar span+span{box-shadow:inset 1px 0 0 #fff}
+.tag{display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap;background:var(--chip);color:var(--ink)}
+.tag.you{background:var(--ink);color:#fff}
+.tag.done{background:var(--ok);color:var(--ok-ink)}
+.excluded{margin:0;padding:12px 20px 16px;font-size:12px;color:var(--ink-3);border-top:1px solid var(--line)}
+.excluded b{color:var(--ink-2);font-weight:600}
+
+/* Drafts and invoice cards */
+.status{font-size:12px;color:var(--ink-3);display:flex;align-items:center;gap:8px}
+.status .dot{width:8px;height:8px;border-radius:50%;background:var(--line-2)}
+.status.ok .dot{background:var(--ok-ink)}
+.status.busy .dot{background:var(--rust)}
+.listhead{display:flex;align-items:center;gap:10px 16px;flex-wrap:wrap;margin:40px 0 14px}
+.listhead h3{font:400 28px/1.1 var(--serif);color:var(--ink)}
+.listhead .spacer{flex:1}
+.cards{display:flex;flex-direction:column;gap:10px}
+.card{border:1px solid var(--line);border-radius:var(--r);background:var(--bg);min-width:0;box-shadow:var(--shadow)}
+.card.you{border-color:#BDBDBA}
+.card summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:12px;padding:16px 20px;border-radius:var(--r)}
+.card summary::-webkit-details-marker{display:none}
+.card summary:hover{background:#FAFAF9}
+.card[open] summary{border-bottom:1px solid var(--line);border-radius:var(--r) var(--r) 0 0}
+.card .sl{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.card .cname{font-weight:600;font-size:15px;line-height:1.3;color:var(--ink);overflow-wrap:anywhere}
+.card .facts{font-size:12px;color:var(--ink-2);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.card .contact{font-size:12px;color:var(--ink-3)}
+.act{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px 0 8px;border:1px solid var(--line-2);border-radius:999px;font-size:12px;font-weight:500;color:var(--ink-2);cursor:pointer;white-space:nowrap;background:var(--bg)}
+.act input{margin:0;width:14px;height:14px;accent-color:var(--ok-ink);pointer-events:none}
+.act.on{border-color:#A9CDB2;background:var(--ok);color:var(--ok-ink)}
+.card.done{opacity:.72}
+.card.done:hover{opacity:1}
+.card .preview{font-size:13px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card[open] .preview{display:none}
+.card .sr2{display:flex;align-items:center;gap:8px;flex:none}
+.card .chev{width:28px;height:28px;padding:6px;border:1px solid var(--line-2);border-radius:50%;color:var(--ink);transition:transform .15s;flex:none}
+.card[open] .chev{transform:rotate(180deg)}
+.tier{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap;background:var(--chip);color:var(--ink)}
+.tier.ok{background:var(--ok);color:var(--ok-ink)}
+.tier.amber{background:var(--amber);color:var(--amber-ink)}
+.tier.red{background:var(--red);color:var(--red-ink)}
+.flags{display:flex;flex-direction:column;gap:4px;margin:0;padding:0;list-style:none;font-size:12px;color:var(--ink-2)}
+.flags li::before{content:"";display:inline-block;width:4px;height:4px;border-radius:50%;background:var(--ink-3);margin:0 8px 2px 0}
+.flags li.tone::before{background:var(--rust)}
+.card .bd{padding:14px 20px 20px;display:flex;flex-direction:column;gap:10px}
+.addr{font-size:12px;color:var(--ink-3);overflow-wrap:anywhere}
+.addr b{color:var(--ink-2);font-weight:500}
+.card .flabel{display:flex;flex-direction:column;gap:4px;font:500 10px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)}
+.card input.subj{width:100%;height:38px;border:1px solid var(--line-2);border-radius:var(--r-sm);padding:0 12px;font:600 13px var(--sans);letter-spacing:0;text-transform:none;background:var(--bg);color:var(--ink)}
+.card textarea{width:100%;min-height:120px;overflow:hidden;border:1px solid var(--line-2);border-radius:var(--r-sm);padding:12px;font:13px/1.6 var(--sans);letter-spacing:0;text-transform:none;resize:vertical;background:var(--bg);color:var(--ink)}
+.card input.subj:hover,.card textarea:hover{border-color:var(--ink-3)}
+.card input.subj:focus,.card textarea:focus{border-color:var(--ink);outline:none;box-shadow:0 0 0 3px rgba(217,102,63,.18)}
+.card .ft{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.card .src{margin-left:auto;font:500 10px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)}
+.needs{padding:14px 16px;display:flex;flex-direction:column;gap:4px;background:var(--grey);border-radius:var(--r-sm)}
+.needs b{color:var(--ink);font-size:14px}
+.needs p{margin:0;font-size:13px;color:var(--ink-2)}
+.fix{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+.fix input{flex:1 1 220px;height:34px;border:1px solid var(--line-2);border-radius:999px;padding:0 14px;font-size:13px;background:var(--bg)}
+.fix .err{flex-basis:100%}
+.listed{margin-top:16px;font-size:13px;color:var(--ink-2)}
+
+/* Rubric */
+.rub{overflow-x:auto}
+.rub table{width:100%;border-collapse:collapse;font-size:13px;min-width:640px}
+.rub th,.rub td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+.rub th:first-child,.rub td:first-child{padding-left:0}
+.rub th{font:500 10px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)}
+.rub td b{color:var(--ink)}
+.rub ul{margin:14px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2)}
+.rub ul li{margin:4px 0}
+.rub ul b{color:var(--ink)}
+
+/* Billing */
+.srcrow{display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap;margin-top:22px;font-size:13px;color:var(--ink-2)}
+.srcrow .spacer{flex:1}
+.handoff{margin-top:20px;border:1px solid var(--line);border-radius:var(--r);padding:14px 18px;display:flex;align-items:center;gap:8px 10px;flex-wrap:wrap;background:var(--grey)}
+.handoff p{margin:0;flex:1 1 260px;font-size:13px;color:var(--ink-2)}
+.handoff p b{color:var(--ink)}
+.sent{margin-top:12px;font-size:13px;color:var(--ok-ink)}
+.bridge{font-size:13px;padding:6px 20px 10px}
+.brow{display:grid;grid-template-columns:minmax(0,1fr) 110px minmax(200px,1.5fr);align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}
+.brow:last-child{border-bottom:none}
+.brow.total{border-top:1px solid var(--line-2)}
+.bridge .who{min-width:0}
+.bridge .who b{font-weight:600;color:var(--ink)}
+.bridge .who span{display:block;font-size:12px;color:var(--ink-3)}
+.bridge .amt{padding-left:12px;text-align:right;font-weight:600;white-space:nowrap;color:var(--ink)}
+.bridge .amt.up{color:var(--ok-ink)}
+.bridge .amt.down{color:var(--red-ink)}
+.bridge .bar3{padding-left:16px}
+.bridge .track{height:10px;border-radius:5px;background:var(--grey);position:relative;overflow:hidden}
+.bridge .track i{position:absolute;top:0;bottom:0;border-radius:5px;min-width:6px}
+.bridge .track i.up{background:#8DBB98}
+.bridge .track i.down{background:var(--rust)}
+.bridge .track i.base{background:var(--ink)}
+.badge{display:inline-flex;align-items:center;height:22px;padding:0 9px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap;background:var(--chip);color:var(--ink)}
+.badge.new{background:var(--ok);color:var(--ok-ink)}
+.badge.final{background:var(--amber);color:var(--amber-ink)}
+.lines{width:100%;border-collapse:collapse;font-size:13px;color:var(--ink)}
+.lines td,.lines th{padding:8px 0;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+.lines th{font:500 10px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)}
+.lines td.r,.lines th.r{text-align:right;white-space:nowrap;padding-left:12px}
+.lines tfoot td{border-bottom:none;font-weight:600}
+.notes{display:flex;flex-direction:column;gap:4px;margin:0;padding:0;list-style:none;font-size:12px;color:var(--ink-2)}
+.notes li::before{content:"";display:inline-block;width:4px;height:4px;border-radius:50%;background:var(--ink);margin:0 8px 2px 0}
+
+/* Close pack */
+.packgrid{display:grid;grid-template-columns:1.6fr 1fr;gap:16px}
+.packgrid .wide{grid-column:1 / -1}
+.reg{width:100%;border-collapse:collapse;font-size:13px;color:var(--ink)}
+.reg th{font:500 10px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);text-align:left;padding:8px 8px 8px 0;border-bottom:1px solid var(--line);white-space:nowrap}
+.reg td{padding:10px 8px 10px 0;border-bottom:1px solid var(--line);white-space:nowrap}
+.reg td.c{white-space:normal}
+.reg .r{text-align:right}
+.reg tr:last-child td{border-bottom:none}
+.reg tfoot td{font-weight:600;border-top:1px solid var(--line-2)}
+.buckets{list-style:none;margin:0;padding:0}
+.buckets li{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);font-size:13px;color:var(--ink)}
+.buckets li:last-child{border-bottom:none;font-weight:600}
+.buckets .amt{margin-left:auto;font-weight:600}
+.buckets .cnt{color:var(--ink-3);font-size:12px;min-width:70px;text-align:right}
+.recon{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.recon h4{margin:0 0 8px;font:500 11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)}
+.recon ul{margin:0;padding:0;list-style:none;font-size:13px;color:var(--ink-2);display:flex;flex-direction:column;gap:8px}
+.recon li b{color:var(--ink);font-weight:600}
+.recon li span{display:block;font-size:12px;color:var(--ink-3)}
+.recon .none{color:var(--ink-3)}
+.packbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:20px}
+.packbar p{margin:0;font-size:12px;color:var(--ink-3);flex:1 1 300px}
+
+/* Founder summary */
+.founder{list-style:none;margin:0;padding:0;counter-reset:f}
+.founder li{counter-increment:f;display:flex;gap:16px;align-items:baseline;padding:16px 0;border-bottom:1px solid var(--line);font-size:16px;line-height:1.5;color:var(--ink)}
+.founder li:first-child{padding-top:4px}
+.founder li:last-child{border-bottom:none;padding-bottom:4px}
+.founder li::before{content:"0" counter(f);font:500 11px var(--mono);letter-spacing:.12em;color:var(--ink-3);flex:none}
+
+/* How it works */
+.how{display:grid;gap:16px}
+.steps{counter-reset:s;list-style:none;padding:0;margin:0 0 20px;display:grid;gap:10px}
+.steps li{counter-increment:s;display:flex;gap:12px;font-size:14px;color:var(--ink-2)}
+.steps li::before{content:counter(s);flex:none;width:24px;height:24px;border-radius:50%;border:1px solid var(--line-2);color:var(--ink);font:500 11px var(--mono);display:flex;align-items:center;justify-content:center}
+.steps code,.sub code{font:12px var(--mono);background:var(--grey);border:1px solid var(--line);border-radius:6px;padding:1px 5px;color:var(--ink)}
+.code{border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden}
+.code .bar2{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--grey);font:500 11px var(--mono);color:var(--ink-2)}
+.code .bar2 .spacer{flex:1}
+.code pre{margin:0;padding:16px;max-height:340px;overflow:auto;font:12px/1.55 var(--mono);color:var(--ink);background:var(--bg)}
+.rules{margin:0;padding-left:18px;font-size:13px;color:var(--ink-2)}
+.rules li{margin:6px 0}
+.rules b{color:var(--ink)}
+
+footer{background:var(--ink);color:#BDBDBA;padding:40px 0 48px;font-size:13px}
+footer p{margin:6px 0;max-width:760px}
+footer q{color:#fff;font-family:var(--serif);font-size:20px;font-style:italic;quotes:"“" "”"}
+footer a{color:#fff}
+footer .mono{color:#8A8A87;margin-bottom:12px;display:block}
+
+@media (max-width:860px){
+  .packgrid{grid-template-columns:1fr}
+  .recon{grid-template-columns:1fr}
+  .ugrid{grid-template-columns:1fr}
+  .hero h1{font-size:48px}
+}
+@media (max-width:640px){
+  html{scroll-padding-top:60px}
+  .wrap{padding:0 16px}
+  .strip .wrap{font-size:10px;letter-spacing:.06em}
+  .strip .gh{display:none}
+  .hero{padding:32px 0 28px}
+  .hero h1{font-size:36px;line-height:1.05}
+  .lede{font-size:16px;margin-top:12px}
+  .flow{grid-template-columns:1fr;gap:8px;margin-top:22px}
+  .flow li.arr{display:none}
+  .flow li.step{padding:12px 14px;border-radius:14px}
+  .band{padding:44px 0}
+  h2{font-size:31px}
+  .listhead{margin-top:32px}
+  .listhead h3{font-size:24px}
+  .runbar{position:static}
+  .runbar .wrap{gap:8px;padding-top:10px;padding-bottom:10px}
+  .runbar .field{flex:1 1 40%}
+  .runbar .field input{width:100%}
+  .runbar .spacer{display:none}
+  .field{gap:4px}
+  .field input{padding:0 10px;height:34px}
+  .tabs{flex:1 1 auto}
+  .tabs button{flex:1}
+  .lg{display:none}
+  .sm{display:inline}
+  .tabs button{padding:0 9px}
+  .signoff summary.btn{padding:0 8px}
+  .panel>.ph,.panel>.pb{padding-left:14px;padding-right:14px}
+  .legend,.agewrap,.excluded,.bridge{padding-left:14px;padding-right:14px}
+  .card summary{align-items:flex-start;padding:14px}
+  .card .bd{padding:12px 14px 16px}
+  .card .sr2{flex-direction:column;align-items:flex-end;gap:6px}
+  .card .chev{order:-1}
+  .card .facts .sep{display:none}
+  .card .facts .tier{margin-right:100%}
+  .listhead .status{display:none}
+  .figures{gap:10px 28px}
+  .fig .v{font-size:18px}
+  .gtable table{min-width:0}
+  .gtable thead{display:none}
+  .gtable tr{display:grid;grid-template-columns:1fr auto;gap:4px 8px;padding:10px 0;border-bottom:1px solid var(--line)}
+  .gtable td{padding:0;border:none}
+  .gtable td.u{grid-column:1 / -1}
+  .aging thead{display:none}
+  .aging td.b{display:none}
+  .aging tr{display:grid;grid-template-columns:1fr auto;gap:6px 12px;padding:12px 0;border-bottom:1px solid var(--line)}
+  .aging td{border:none;padding:0}
+  .aging td.name{min-width:0}
+  .aging td.barcell{grid-column:1 / -1;width:auto}
+  .aging tfoot tr{border-bottom:none}
+  .brow{grid-template-columns:minmax(0,1fr) auto;row-gap:6px}
+  .bridge .bar3{grid-column:1 / -1;padding-left:0}
+  .lines .hide-sm,.reg .hide-sm{display:none}
+  .founder li{font-size:15px;gap:12px}
+}
+</style>
+</head>
+<body>
+<div class="strip">
+  <div class="wrap">
+    <span class="dot" aria-hidden="true"></span>
+    <span><span id="stripData">Demo data</span> · built for Different's founder's office by Jake Makking-Robinson</span>
+    <a class="gh" href="https://github.com/JakeM-R/different-billing#readme" target="_blank" rel="noopener">Source ↗</a>
+  </div>
+</div>
+
+<header class="hero">
+  <div class="wrap">
+    <h1>Drop in your contracts. Get month-end invoices, who's overdue, and the email to <em>send</em> each of them.</h1>
+    <p class="lede">Billing, chasing and the accountant hand-off from one file, in about five minutes a month.</p>
+    <ol class="flow">
+      <li class="step"><a href="#bill"><span class="k"><b>01</b><span class="chip">Bill</span></span><p>Month-end invoices, one per customer, reconciled against last month.</p></a></li>
+      <li class="arr" aria-hidden="true">→</li>
+      <li class="step"><a href="#chase"><span class="k"><b>02</b><span class="chip">Chase</span></span><p>Every two weeks: aging by customer and a drafted email for each one late.</p></a></li>
+      <li class="arr" aria-hidden="true">→</li>
+      <li class="step"><a href="#pack"><span class="k"><b>03</b><span class="chip">Hand off</span></span><p>A close pack for the accountants and three lines for the founders.</p></a></li>
+    </ol>
+    <p class="works">Works from a CRM export or a Sheet, on top of whatever sends the invoices (Stripe, QuickBooks). Already run below on demo data.</p>
+  </div>
+</header>
+
+<div class="runbar">
+  <div class="wrap">
+    <label class="field"><span class="lg">Billing month</span><input type="month" id="billMonth" aria-label="Billing month"></label>
+    <label class="field"><span class="lg">Run date</span><input type="date" id="runDate" aria-label="Aging run date"></label>
+    <span class="spacer"></span>
+    <div class="tabs" role="tablist" aria-label="Data source">
+      <button role="tab" id="tabDemo" type="button" aria-selected="true">Demo<span class="lg"> data</span></button>
+      <button role="tab" id="tabUpload" type="button" aria-selected="false">Your data</button>
+    </div>
+    <details class="signoff" id="settings">
+      <summary class="btn ghost" aria-label="Email signature"><span class="lg">Signature</span><span class="sm">Sign</span></summary>
+      <div class="pop">
+        <p class="popmsg" id="sigMsg" hidden></p>
+        <label>Sender name<input id="sName"></label>
+        <label>Sender role<input id="sRole"></label>
+        <label>Tier 4 sender (founder)<input id="fName"></label>
+        <label>Founder role<input id="fRole"></label>
+        <label>Company name on invoices<input id="cName"></label>
+        <button class="btn primary" id="saveSign" type="button">Apply to drafts</button>
+      </div>
+    </details>
+  </div>
+</div>
+
+<input type="file" id="billFile" accept=".csv,text/csv" class="sr" tabindex="-1">
+<input type="file" id="file" accept=".csv,text/csv" class="sr" tabindex="-1">
+
+<section id="uploadPanel" class="upload" hidden>
+  <div class="wrap">
+    <p class="eyebrow"><b>Your data</b> · read in this browser, never uploaded</p>
+    <div class="ugrid">
+      <div>
+        <div id="billHead"></div>
+        <div id="billMapper"></div>
+        <details class="guide" id="billGuide">
+          <summary>Columns the contracts file needs</summary>
+          <p class="sub">Export active contracts or deals from your CRM, or keep them in a Sheet, as CSV with one row per contract. Use these column names, or download the template. If your file names a column differently, you match it after choosing the file.</p>
+          <div class="gtable" id="billGuideTable"></div>
+          <p class="sub small">Slash dates are read as US (MM/DD/YYYY) unless the file shows they are day first, and you can choose when matching columns. ISO dates (2026-10-16) and "Oct 16, 2026" also work.</p>
+        </details>
+      </div>
+      <div>
+        <div id="uploadHead"></div>
+        <div id="mapper"></div>
+        <details class="guide" id="guide">
+          <summary>Columns the invoice export needs</summary>
+          <p class="sub">Export invoices from Stripe, QuickBooks or your CRM as CSV, one row per invoice, including paid ones if you want the late-history modifier. Use these column names, or download the template. If your export names a column differently, you match it after choosing the file.</p>
+          <div class="gtable" id="guideTable"></div>
+          <p class="sub small">Slash dates are read as US (MM/DD/YYYY) unless the file shows they are day first, and you can choose when matching columns.</p>
+        </details>
+      </div>
+    </div>
+  </div>
+</section>
+
+<main>
+  <section id="chase" class="band grey">
+    <div class="wrap">
+      <p class="eyebrow"><b>02 · Chase</b> · every two weeks <span class="pill demo" id="dataPill">Demo data</span></p>
+      <h2 id="headline" class="num"></h2>
+      <div class="figures num" id="figures"></div>
+      <div class="callouts" id="callouts"></div>
+
+      <div class="panel tool" id="agingSec">
+        <div class="ph">
+          <h3>Aging by customer</h3>
+          <span class="spacer"></span>
+          <div class="seg" role="group" aria-label="Sort aging" data-list="aging"><button type="button" data-sort="needs" aria-pressed="true">Needs action</button><button type="button" data-sort="overdue" aria-pressed="false">Most overdue</button><button type="button" data-sort="amount" aria-pressed="false">Largest amount</button></div>
+        </div>
+        <div class="legend" id="legend"></div>
+        <div class="agewrap"><table class="aging num" id="aging"></table></div>
+        <p class="excluded" id="excluded"></p>
+      </div>
+
+      <div id="drafts">
+        <div class="listhead">
+          <h3>Chaser drafts</h3>
+          <div class="status" id="draftStatus"><span class="dot"></span><span></span></div>
+          <span class="spacer"></span>
+          <div class="seg" role="group" aria-label="Sort drafts" data-list="drafts"><button type="button" data-sort="needs" aria-pressed="true">Needs action</button><button type="button" data-sort="overdue" aria-pressed="false">Most overdue</button><button type="button" data-sort="amount" aria-pressed="false">Largest amount</button></div>
+        </div>
+        <p class="sub">One email per customer, covering every open invoice. The tier comes from the oldest overdue invoice; tone moves a step with payment history; Tier 4 goes out from a founder. Edit in place, then copy or open in Gmail. <a href="#tiers">How tiers are set</a></p>
+        <div class="cards" id="cards"></div>
+        <p class="listed" id="listed"></p>
+      </div>
+    </div>
+  </section>
+
+  <section id="bill" class="band">
+    <div class="wrap">
+      <p class="eyebrow"><b>01 · Bill</b> · month-end</p>
+      <h2 id="billHeadline" class="num"></h2>
+      <div class="figures num" id="billFigures"></div>
+      <div class="callouts" id="billCallouts"></div>
+      <div class="srcrow" id="billSrc"></div>
+      <div class="handoff" id="handoff"></div>
+      <p class="sent" id="sentNote" hidden></p>
+      <div class="listhead"><h3>Invoices</h3></div>
+      <p class="sub">One invoice per customer, a line for each contract. Issued on the last day of the month, due on the customer's terms. Open one to check the lines, edit the cover email or download the PDF.</p>
+      <div class="cards" id="invCards"></div>
+      <p class="listed" id="notBilled"></p>
+    </div>
+  </section>
+
+  <section id="bridgeSec" class="band grey">
+    <div class="wrap">
+      <p class="eyebrow"><b>01 · Bill</b> · reconciliation</p>
+      <h2>Last month to this month</h2>
+      <p class="sub">Every dollar of change, contract by contract, so the total can be signed off before anything goes out.</p>
+      <div class="panel"><div class="bridge num" id="bridge"></div></div>
+    </div>
+  </section>
+
+  <section id="pack" class="band">
+    <div class="wrap">
+      <p class="eyebrow"><b>03 · Hand off</b> · to the accountants</p>
+      <h2 id="packHeadline">Close pack</h2>
+      <p class="sub">The invoice register for the month, AR aging at the run date and a note of what changed in the contracts. One export, CSV plus a one-page PDF.</p>
+      <div class="packgrid">
+        <div class="panel"><div class="ph"><h3>Invoice register</h3><span class="spacer"></span><span class="mono" id="regMeta"></span></div><div class="pb"><table class="reg num" id="register"></table></div></div>
+        <div class="panel"><div class="ph"><h3>AR aging</h3><span class="spacer"></span><span class="mono" id="ageMeta"></span></div><div class="pb"><ul class="buckets num" id="buckets"></ul><p class="sub small" id="ageNote" style="margin:12px 0 0"></p></div></div>
+        <div class="panel wide"><div class="ph"><h3>Reconciliation note</h3><span class="spacer"></span><span class="mono" id="reconMeta"></span></div><div class="pb"><div class="recon" id="recon"></div></div></div>
+      </div>
+      <div class="packbar">
+        <button class="btn primary" type="button" id="dlPack">Download close pack (PDF)</button>
+        <button class="btn" type="button" id="dlPackCsv">CSV</button>
+        <p>No GL coding or revenue recognition: that's the accountants' call.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="founderSec" class="band grey">
+    <div class="wrap">
+      <p class="eyebrow"><b>03 · Hand off</b> · to the founders</p>
+      <h2>Three lines for the founders</h2>
+      <p class="sub">Billed this month against last, what's overdue, and which drafts need a founder's signature. Paste into Slack or the weekly update.</p>
+      <div class="panel">
+        <div class="pb"><ol class="founder num" id="founder"></ol></div>
+        <div class="ph" style="border-bottom:0;border-top:1px solid var(--line)"><span class="mono" id="founderMeta"></span><span class="spacer"></span><button class="btn" type="button" id="copyFounder">Copy</button></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="how" class="band">
+    <div class="wrap">
+      <p class="eyebrow"><b>How it works</b></p>
+      <h2>The rules, stated</h2>
+      <p class="sub">Nothing here is a black box. These are the thresholds the page uses, and the script that runs the aging on a schedule.</p>
+      <div class="how">
+        <div class="panel" id="tiers"><div class="ph"><h3>How tiers are set</h3></div><div class="pb"><div class="rub" id="rubric"></div></div></div>
+        <div class="panel"><div class="ph"><h3>How the billing run works</h3></div><div class="pb"><div class="rub" id="billRules"></div></div></div>
+        <div class="panel" id="script">
+          <div class="ph"><h3>Make it run itself</h3></div>
+          <div class="pb">
+            <p class="sub" style="margin-top:0">A Google Apps Script with the same aging, tiers and templates as this page (it's the same code). Every 14 days it reads the invoice export in a Sheet, saves one Gmail draft per customer for you to review (replacing last run's drafts you didn't send), and posts the summary to Slack. Nothing sends without you.</p>
+            <ol class="steps">
+              <li><span>Paste the invoice export into a Google Sheet, in a tab named <code>Invoices</code>, headers in row 1.</span></li>
+              <li><span>Open <b>Extensions › Apps Script</b>, replace the contents of <code>Code.gs</code> with the script below, and save.</span></li>
+              <li><span>In <b>Project Settings › Script properties</b>, add <code>SENDER_NAME</code>, <code>SENDER_ROLE</code>, <code>FOUNDER_NAME</code>, <code>FOUNDER_ROLE</code> and, optionally, a Slack incoming webhook as <code>SLACK_WEBHOOK_URL</code>.</span></li>
+              <li><span>Run <code>setup</code> once and grant access to Sheets, Gmail and external requests. It adds a trigger for every other Monday at 8am.</span></li>
+              <li><span>Run <code>run</code> once to check: drafts land in Gmail, the summary posts, and an <code>AR runs</code> tab logs the totals.</span></li>
+            </ol>
+            <div class="code">
+              <div class="bar2"><span>Code.gs</span><span id="scriptSize"></span><span class="spacer"></span><button class="btn" type="button" id="dlScript">Download</button><button class="btn primary" type="button" id="copyScript">Copy script</button></div>
+              <pre id="scriptCode">Loading…</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span class="mono">Why this exists</span>
+    <p><q>Work with external accountants and internal teams to keep billing, payments, reporting…</q></p>
+    <p>A working prototype by Jake Makking-Robinson for the Founder's Office Finance &amp; BizOps role, built against that line of the posting. Demo customers are generic (A to L) and demo amounts show as $xx; load your own files to see real figures. Billing, aging and drafting all run in your browser. Nothing is uploaded or stored.</p>
+    <p><a href="https://github.com/JakeM-R/different-billing#readme" target="_blank" rel="noopener">Source and README ↗</a></p>
+  </div>
+</footer>
+
+<script src="ar.js?v=__V__"></script>
+<script src="billing.js?v=__V__"></script>
+<script src="close-pack.js?v=__V__"></script>
+<script src="invoice-pdf.js?v=__V__"></script>
+<script src="demo.js?v=__V__"></script>
+<script src="app.js?v=__V__"></script>
+</body>
+</html>
