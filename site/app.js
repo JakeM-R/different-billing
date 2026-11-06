@@ -113,8 +113,6 @@
     } else {
       renderUploadHead();
       renderBillHead();
-      $("guide").open = isDemo();
-      $("billGuide").open = billDemo();
       if (!quiet) $("uploadPanel").scrollIntoView({ behavior: "smooth", block: "start" });
     }
   }
@@ -123,7 +121,7 @@
     if (!isDemo()) {
       $("uploadHead").innerHTML = '<div class="loaded"><span>Showing <b>' + esc(state.fileName) + "</b> · " + state.rows.length + " rows</span>" +
         '<span class="spacer"></span><label for="file" class="btn" tabindex="0" data-pick>Choose another file</label><button class="btn ghost" type="button" id="arBackDemo">Back to demo</button></div>';
-      $("arBackDemo").onclick = function () { loadDemo(); renderUploadHead(); $("guide").open = true; };
+      $("arBackDemo").onclick = function () { loadDemo(); renderUploadHead(); };
       return;
     }
     $("uploadHead").innerHTML = '<div class="drop" id="drop"><span class="mono">For 02 · Chase</span><h3>Open invoices</h3>' +
@@ -146,6 +144,7 @@
     var need = function (f) {
       return f.required ? '<span class="need req">Required</span>' : f.recommended ? '<span class="need rec">Recommended</span>' : '<span class="need opt">Optional</span>';
     };
+    $("guideMeta").textContent = "Required: " + AR.FIELDS.filter(function (f) { return f.required; }).map(function (f) { return GUIDE_HEADERS[f.key]; }).join(", ");
     $("guideTable").innerHTML = "<table><thead><tr><th>Column</th><th></th><th>What it's used for</th></tr></thead><tbody>" +
       AR.FIELDS.map(function (f) {
         return '<tr><td class="f">' + esc(GUIDE_HEADERS[f.key]) + "</td><td>" + need(f) + '</td><td class="u">' + esc(f.use) + "</td></tr>";
@@ -206,7 +205,6 @@
       $("mapper").innerHTML = "";
       runAnalysis();
       renderUploadHead();
-      $("guide").open = false;
       goTo("chase");
     };
     $("cancelMap").onclick = function () { $("mapper").innerHTML = ""; };
@@ -855,6 +853,7 @@
     };
     var names = {};
     DEMO.CONTRACT_HEADERS.forEach(function (h) { var k = BILL.autoMap([h]); Object.keys(k).forEach(function (x) { names[x] = h; }); });
+    $("billGuideMeta").textContent = "Required: " + BILL.FIELDS.filter(function (f) { return f.required; }).map(function (f) { return names[f.key] || f.label; }).join(", ");
     $("billGuideTable").innerHTML = "<table><thead><tr><th>Column</th><th></th><th>What it's used for</th></tr></thead><tbody>" +
       BILL.FIELDS.map(function (f) {
         return '<tr><td class="f">' + esc(names[f.key] || f.label) + "</td><td>" + need(f) + '</td><td class="u">' + esc(f.use) + "</td></tr>";
@@ -896,7 +895,6 @@
       b.source = "file"; b.fileName = pd.name; b.dateOrder = $("bDateOrder").value; b.headers = pd.headers; b.rows = pd.rows; b.map = m;
       $("billMapper").innerHTML = "";
       runBilling();
-      $("billGuide").open = false;
       goTo("bill");
     };
     $("bCancel").onclick = function () { $("billMapper").innerHTML = ""; };
