@@ -4,7 +4,7 @@
 
 At month-end, who do we bill and for how much, who owes us money right now, and what goes to the accountants?
 
-Drop in a contracts file (a CRM export or a Sheet) and the page gives you this month's invoices, aging by customer with a drafted email for each one late, a close pack for the external accountants and three lines for the founders. It runs on demo data when it opens. Everything runs in the browser, and nothing is uploaded or stored.
+Drop in a contracts file (a CRM export or a Sheet) and the page gives you this month's invoices, aging by customer with a drafted email for each one late, a close pack for the external accountants and a three-line summary for the founders. It runs on demo data when it opens. Everything runs in the browser, and nothing is uploaded or stored.
 
 A working prototype by Jake Makking-Robinson for Different's Founder's Office Finance & BizOps role, built against one line of the posting: "Work with external accountants and internal teams to keep billing, payments, reporting…".
 
@@ -14,7 +14,7 @@ A working prototype by Jake Makking-Robinson for Different's Founder's Office Fi
 
 **02 · Chase (every two weeks).** Aging by customer (current, 1–30, 31–60, 61–90, 90+ days at the run date) from an invoice export or the billing run's own invoices. Sorts: Needs action, Most overdue, Largest amount. There's one chaser draft per customer covering every open invoice. The tier comes from the oldest overdue invoice, tone moves a step with payment history, Tier 4 goes out from a founder and 90+ days gets a call, not an email. The thresholds are on the page under "How tiers are set".
 
-**03 · Hand off.** The close pack has the invoice register for the month (number, customer, issue and due dates, amount, status), AR aging buckets at the run date, and a reconciliation note listing contracts added, ended or changed against last month. It downloads as one CSV and a one-page PDF. There's no GL coding or revenue recognition: those are the accountants' call. The founder summary is three lines: billed against last month, what's overdue, and which drafts need a founder's signature.
+**03 · Hand off.** The close pack has the invoice register for the month (number, customer, issue and due dates, amount, status), AR aging buckets at the run date, and a reconciliation note listing contracts added, ended or changed against last month. It downloads as one CSV and a one-page PDF. There's no GL coding or revenue recognition: those are the accountants' call. The three-line summary for the founders covers billed against last month, what's overdue, and which drafts need a founder's signature.
 
 **Make it run itself.** A Google Apps Script with the same aging core runs every other Monday on a Sheet, saves Gmail drafts (replacing last run's unsent ones) and can post a summary to Slack.
 
