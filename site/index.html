@@ -85,7 +85,11 @@ button,input,select,textarea{font:inherit;color:inherit}
 .signoff{position:relative}
 .signoff summary{list-style:none}
 .signoff summary::-webkit-details-marker{display:none}
-.ctx{text-transform:none;letter-spacing:.04em;font-size:12px}
+.ctlrow{display:flex;align-items:center;flex-wrap:wrap;gap:10px 16px;margin-top:16px}
+.striplink{border:0;background:none;padding:0;cursor:pointer;color:#fff;font:inherit;letter-spacing:inherit;text-transform:inherit;text-decoration:underline;text-decoration-color:rgba(255,255,255,.4);text-underline-offset:3px}
+.siggrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px 16px}
+.siggrid label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ink-2);font-weight:500}
+.siggrid input{height:34px;border:1px solid var(--line-2);border-radius:var(--r-sm);padding:0 10px;font-size:13px}
 .pop{position:absolute;right:0;top:44px;width:300px;max-height:calc(100vh - 120px);overflow:auto;background:var(--bg);border:1px solid var(--line);border-radius:var(--r);padding:18px;display:grid;gap:10px;z-index:30;box-shadow:0 12px 32px rgba(17,17,17,.12)}
 .pop label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ink-2);font-weight:500}
 .pop input{height:34px;border:1px solid var(--line-2);border-radius:var(--r-sm);padding:0 10px;font-size:13px}
@@ -391,7 +395,8 @@ footer .mono{color:#8A8A87;margin-bottom:12px;display:block}
   html{scroll-padding-top:60px}
   .wrap{padding:0 16px}
   .strip .wrap{font-size:10px;letter-spacing:.06em}
-  .strip .gh{display:none}
+  .strip .wrap{flex-wrap:wrap}
+  .strip .dot{display:none}
   .hero{padding:28px 0 24px}
   .hero h1{font-size:36px;line-height:1.05}
   .lede{font-size:16px;margin-top:12px}
@@ -460,7 +465,7 @@ footer .mono{color:#8A8A87;margin-bottom:12px;display:block}
   <div class="wrap">
     <span class="dot" aria-hidden="true"></span>
     <span id="stripData">Demo data · built for Different's founder's office by Jake Makking-Robinson</span>
-    <a class="gh" href="https://github.com/JakeM-R/different-billing#readme" target="_blank" rel="noopener">Source ↗</a>
+    <button class="gh striplink" type="button" id="uploadToggle">Use your data →</button>
   </div>
 </div>
 
@@ -478,28 +483,6 @@ footer .mono{color:#8A8A87;margin-bottom:12px;display:block}
     <p class="works">Works from a CRM export or a Sheet, on top of whatever sends the invoices (Stripe, QuickBooks). <span id="worksTail">Already run on demo data: pick a step.</span></p>
   </div>
 </header>
-
-<div class="runbar">
-  <div class="wrap">
-    <span class="ctx mono" id="runCtx"></span>
-    <span class="spacer"></span>
-    <button class="btn primary" type="button" id="uploadToggle">Upload your data</button>
-    <details class="signoff" id="settings">
-      <summary class="btn" aria-label="Settings">Settings</summary>
-      <div class="pop">
-        <p class="popmsg" id="sigMsg" hidden></p>
-        <label>Billing month<input type="month" id="billMonth"></label>
-        <label>Aging run date<input type="date" id="runDate"></label>
-        <label>Sender name<input id="sName"></label>
-        <label>Sender role<input id="sRole"></label>
-        <label>Tier 4 sender (founder)<input id="fName"></label>
-        <label>Founder role<input id="fRole"></label>
-        <label>Company name on invoices<input id="cName"></label>
-        <button class="btn primary" id="saveSign" type="button">Apply to drafts</button>
-      </div>
-    </details>
-  </div>
-</div>
 
 <input type="file" id="billFile" accept=".csv,text/csv" class="sr" tabindex="-1">
 <input type="file" id="file" accept=".csv,text/csv" class="sr" tabindex="-1">
@@ -537,6 +520,7 @@ footer .mono{color:#8A8A87;margin-bottom:12px;display:block}
     <div class="wrap">
       <p class="eyebrow"><b>01 · Bill</b> · month-end</p>
       <h2 id="billHeadline" class="num"></h2>
+      <div class="ctlrow"><label class="field">Billing month<input type="month" id="billMonth"></label></div>
       <div class="figures num" id="billFigures"></div>
       <div class="callouts" id="billCallouts"></div>
       <div class="srcrow" id="billSrc"></div>
@@ -556,6 +540,7 @@ footer .mono{color:#8A8A87;margin-bottom:12px;display:block}
     <div class="wrap">
       <p class="eyebrow"><b>02 · Chase</b> · every two weeks <span class="pill demo" id="dataPill">Demo data</span></p>
       <h2 id="headline" class="num"></h2>
+      <div class="ctlrow"><label class="field">Run date<input type="date" id="runDate"></label><span class="spacer"></span><span class="srcrow" id="arSrc" style="margin:0"></span></div>
       <div class="figures num" id="figures"></div>
       <div class="callouts" id="callouts"></div>
 
@@ -569,6 +554,19 @@ footer .mono{color:#8A8A87;margin-bottom:12px;display:block}
       <p class="listed" id="listed"></p>
 
       <div class="folds">
+<details class="panel fold" id="settings"><summary class="ph"><h3>Email signature</h3><span class="mono foldmeta" id="sigMeta"></span><span class="spacer"></span><span class="pm" aria-hidden="true"></span></summary>
+          <div class="pb">
+            <p class="popmsg" id="sigMsg" hidden></p>
+            <div class="siggrid">
+              <label>Sender name<input id="sName"></label>
+              <label>Sender role<input id="sRole"></label>
+              <label>Tier 4 sender (founder)<input id="fName"></label>
+              <label>Founder role<input id="fRole"></label>
+              <label>Company name on invoices<input id="cName"></label>
+            </div>
+            <button class="btn primary" id="saveSign" type="button" style="margin-top:14px">Apply to emails and invoices</button>
+          </div>
+        </details>
         <details class="panel fold" id="agingSec"><summary class="ph"><h3>Aging by customer</h3><span class="mono foldmeta" id="agingMeta">days past due at the run date</span><span class="spacer"></span><span class="pm" aria-hidden="true"></span></summary>
           <div class="ph sortrow"><div class="seg" role="group" aria-label="Sort aging" data-list="aging"><button type="button" data-sort="needs" aria-pressed="true">Needs action</button><button type="button" data-sort="overdue" aria-pressed="false">Most overdue</button><button type="button" data-sort="amount" aria-pressed="false">Largest amount</button></div></div>
           <div class="legend" id="legend"></div>

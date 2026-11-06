@@ -106,7 +106,7 @@
   // A file applied there replaces that part of the data and brings you back to the results.
   function setTab(tab, quiet) {
     state.tab = tab;
-    $("uploadToggle").textContent = tab === "upload" ? "← Back to results" : "Upload your data";
+    $("uploadToggle").textContent = tab === "upload" ? "← Back to results" : "Use your data →";
     $("uploadPanel").hidden = tab !== "upload";
     $("main").hidden = tab === "upload";
     if (tab === "upload") {
@@ -259,7 +259,7 @@
   function requestModelDrafts() {
     var res = state.result;
     var targets = res.customers.filter(function (c) { return c.action === "chase" || c.action === "billing"; });
-    if (!WORKER_URL) { setStatus("", "Drafts from fixed templates per tier."); return; }
+    if (!WORKER_URL) { $("draftStatus").hidden = true; return; }
     if (!targets.length) { setStatus("", "Nothing to draft this run"); return; }
     var runId = ++state.runId;
     setStatus("busy", "Drafting with AI… templates shown meanwhile");
@@ -306,6 +306,10 @@
     pill.className = "pill " + (isDemo() ? "demo" : "file");
     pill.textContent = isDemo() ? "Demo invoices" : state.fileName;
     pill.hidden = isDemo(); // the strip already says demo
+    $("arSrc").innerHTML = isDemo()
+      ? '<label for="file" class="btn" tabindex="0" data-pick>Use your invoice export</label>'
+      : '<label for="file" class="btn" tabindex="0" data-pick>Choose another file</label><button class="btn ghost" type="button" id="arSrcDemo">Back to demo</button>';
+    if ($("arSrcDemo")) $("arSrcDemo").onclick = loadDemo;
     pill.title = isDemo() ? "Fictional customers and figures" : "Your file, processed in this browser";
 
     $("runDate").value = AR.isoDate(state.runDate);
@@ -698,7 +702,8 @@
   function renderStrip() {
     var allDemo = isDemo() && billDemo(), anyDemo = isDemo() || billDemo();
     document.querySelector(".strip .dot").hidden = !anyDemo;
-    if (state.bill.run) $("runCtx").textContent = state.bill.run.period.label + " billing · aging at " + AR.fmtDate(state.runDate);
+    var st = state.settings;
+    $("sigMeta").textContent = st.senderName + ", " + st.senderRole;
     var by = "built for Different's founder's office by Jake Makking-Robinson";
     $("stripData").textContent = allDemo ? "Demo data · " + by
       : anyDemo ? (isDemo() ? "Demo invoices" : "Demo contracts") + " · " + by
@@ -866,6 +871,7 @@
   function loadBillFile(file) {
     var reader = new FileReader();
     reader.onload = function () {
+      if (state.tab !== "upload") setTab("upload", true);
       var p = AR.parseCSV(reader.result);
       if (!p.headers.length || !p.rows.length) { $("billMapper").innerHTML = '<div class="mapper"><p class="err">That file has no rows.</p></div>'; return; }
       state.bill.pending = { headers: p.headers, rows: p.rows, name: file.name };
@@ -960,8 +966,9 @@
     var m = $("sigMsg");
     m.textContent = founder ? "Tier 4 emails go out from the founder. Add their name and role, then send again." : "Add the name and role to sign emails with, then send again.";
     m.hidden = false;
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    setView("chase", true);
     $("settings").open = true;
+    $("settings").scrollIntoView({ behavior: "smooth", block: "start" });
     $(founder ? "fName" : "sName").focus({ preventScroll: true });
   }, true);
 
@@ -1002,7 +1009,7 @@
     runAnalysis();
   });
   $("file").addEventListener("change", function (e) { if (e.target.files[0]) loadFile(e.target.files[0]); e.target.value = ""; });
-  $("uploadPanel").addEventListener("keydown", function (e) {
+  document.addEventListener("keydown", function (e) {
     if (e.target.hasAttribute && e.target.hasAttribute("data-pick") && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); $("file").click(); }
   });
   document.querySelectorAll(".seg").forEach(function (seg) {
@@ -1026,7 +1033,6 @@
     state.settings.founderName = $("fName").value.trim() || AR.DEFAULT_SETTINGS.founderName;
     state.settings.founderRole = $("fRole").value.trim() || AR.DEFAULT_SETTINGS.founderRole;
     state.settings.companyName = $("cName").value.trim() || AR.DEFAULT_SETTINGS.companyName;
-    $("settings").open = false;
     $("sigMsg").hidden = true;
     runAnalysis();
     if (state.bill.run) runBilling();
