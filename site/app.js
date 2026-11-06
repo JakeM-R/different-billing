@@ -106,8 +106,7 @@
   // A file applied there replaces that part of the data and brings you back to the results.
   function setTab(tab, quiet) {
     state.tab = tab;
-    $("tabDemo").setAttribute("aria-selected", tab === "data");
-    $("tabUpload").setAttribute("aria-selected", tab === "upload");
+    $("uploadToggle").textContent = tab === "upload" ? "← Back to results" : "Upload your data";
     $("uploadPanel").hidden = tab !== "upload";
     $("main").hidden = tab === "upload";
     if (tab === "upload") {
@@ -253,12 +252,6 @@
       if (e && d.body) { d.subject = e.subject; d.body = e.body; d.editedFor = e.runDate; state.dirty[i] = true; }
       state.drafts[i] = d;
     });
-    // First load of the demo opens the Tier 3 draft, the one that shows the most (CC to AP, invoice list, firm ask).
-    if (isDemo() && !state.autoOpened) {
-      state.autoOpened = true;
-      var t3 = state.result.customers.filter(function (c) { return c.tier === 3 && c.action === "chase"; })[0];
-      if (t3) state.open[editKey(t3)] = true;
-    }
     render();
     requestModelDrafts();
   }
@@ -312,6 +305,7 @@
     var pill = $("dataPill");
     pill.className = "pill " + (isDemo() ? "demo" : "file");
     pill.textContent = isDemo() ? "Demo invoices" : state.fileName;
+    pill.hidden = isDemo(); // the strip already says demo
     pill.title = isDemo() ? "Fictional customers and figures" : "Your file, processed in this browser";
 
     $("runDate").value = AR.isoDate(state.runDate);
@@ -704,6 +698,7 @@
   function renderStrip() {
     var allDemo = isDemo() && billDemo(), anyDemo = isDemo() || billDemo();
     document.querySelector(".strip .dot").hidden = !anyDemo;
+    if (state.bill.run) $("runCtx").textContent = state.bill.run.period.label + " billing · aging at " + AR.fmtDate(state.runDate);
     var by = "built for Different's founder's office by Jake Makking-Robinson";
     $("stripData").textContent = allDemo ? "Demo data · " + by
       : anyDemo ? (isDemo() ? "Demo invoices" : "Demo contracts") + " · " + by
@@ -1020,8 +1015,7 @@
       if (seg.dataset.list === "aging") renderAging(); else renderCards();
     });
   });
-  $("tabDemo").addEventListener("click", function () { setTab("data"); });
-  $("tabUpload").addEventListener("click", function () { setTab("upload"); });
+  $("uploadToggle").addEventListener("click", function () { setTab(state.tab === "upload" ? "data" : "upload"); });
 
   ["sName", "sRole", "fName", "fRole", "cName"].forEach(function (id, i) {
     $(id).value = state.settings[["senderName", "senderRole", "founderName", "founderRole", "companyName"][i]];
