@@ -202,6 +202,7 @@
       if (miss.length) { $("mapErr").textContent = "Still needed: " + miss.join(", "); return; }
       state.source = "file"; state.fileName = state.pending.name; state.settings.dateOrder = $("dateOrder").value;
       state.headers = state.pending.headers; state.rows = state.pending.rows; state.map = m;
+      if (state.billed && state.billed.demo) state.billed = null; // don't mix demo invoices into a real export
       $("mapper").innerHTML = "";
       runAnalysis();
       renderUploadHead();
@@ -318,7 +319,8 @@
     $("runDate").value = AR.isoDate(state.runDate);
 
     var n = res.toChase;
-    $("headline").textContent = n + " customer" + (n === 1 ? " is" : "s are") + " late. Each one has a draft.";
+    var drafted = res.customers.filter(function (c) { return c.tier >= 1 && state.drafts[c.id] && state.drafts[c.id].body; }).length;
+    $("headline").textContent = n + " customer" + (n === 1 ? " is" : "s are") + " late. " + (drafted === n ? (n === 1 ? "The email is" : "Every email is") + " drafted." : drafted + " email" + (drafted === 1 ? " is" : "s are") + " drafted; " + (n - drafted) + " need" + (n - drafted === 1 ? "s" : "") + " you first.");
     $("figures").innerHTML = fig("Outstanding", kMoney(res.totalAR)) + fig("Over 30 days", kMoney(res.over30)) + fig("Next run", esc(AR.fmtDate(res.nextRun)));
 
     var needs = res.customers.filter(function (c) { return c.needsYou; });
@@ -532,6 +534,8 @@
     b.source = "demo"; b.fileName = ""; b.dateOrder = "auto"; b.headers = p.headers; b.rows = p.rows; b.map = BILL.autoMap(p.headers);
     $("billMapper").innerHTML = "";
     runBilling();
+    // The demo AR export predates this month's billing, so the demo adds the month's invoices to it.
+    if (isDemo()) sendToAging(true);
   }
 
   function runBilling() {
@@ -588,7 +592,8 @@
     var b = state.bill, run = b.run, P = run.period;
     $("billMonth").value = P.key;
     var n = run.invoices.length;
-    $("billHeadline").textContent = n + " invoice" + (n === 1 ? "" : "s") + " to send";
+    var ready = run.invoices.filter(function (i) { return !i.needsYou; }).length;
+    $("billHeadline").textContent = n + " invoice" + (n === 1 ? "" : "s") + " for " + P.label.split(" ")[0] + (ready === n ? ", all ready to send." : ", " + ready + " ready to send.");
     $("billFigures").innerHTML = fig("Billed", bK(run.total)) + fig("Issued", esc(AR.fmtDate(P.end)));
 
     var needs = run.invoices.filter(function (i) { return i.needsYou; }).map(function (i) { return i.customer; })
@@ -663,7 +668,7 @@
       return '<li><span class="pill ' + AGE_PILL[b.key] + '">' + (b.key === "current" ? "✓ " : "") + esc(b.label) + (b.key === "current" ? "" : " days") + '</span><span class="cnt">' + plural(b.count, "invoice") + '</span><span class="amt">' + am(b.amount) + "</span></li>";
     }).join("") + '<li><span>Total open AR</span><span class="amt">' + am(pack.arTotal) + "</span></li>";
     $("ageNote").textContent = state.billed && state.billed.key === pack.period.key
-      ? "Includes this month's " + state.billed.count + " invoices."
+      ? "Includes " + pack.period.label.split(" ")[0] + "'s " + state.billed.count + " ready invoices" + (state.billed.held ? "; the " + state.billed.held + " held ones join once fixed." : ".")
       : "All open invoices in the aging data. This month's invoices join once you add them to the aging run.";
     var groups = [["added", "Added"], ["ended", "Ended"], ["changed", "Changed"]];
     var sgn = function (n) { return billDemo() ? (n < 0 ? "−$xx" : "+$xx") : (n < 0 ? "−" : "+") + AR.fmtMoney(Math.abs(n)); };
@@ -802,21 +807,23 @@
     $("toAging").onclick = sendToAging;
     var b = state.billed;
     $("sentNote").hidden = !(b && b.key === run.period.key);
-    if (b) $("sentNote").textContent = "Added: " + b.count + " invoices are in the aging run and the close pack. Move the run date past " + AR.fmtDate(b.firstDue) + " to watch them come due.";
+    if (b) $("sentNote").textContent = "In the aging run and the close pack: " + b.count + " invoices" + (b.held ? " (" + b.held + " held until fixed)" : "") + ". Move the run date past " + AR.fmtDate(b.firstDue) + " to watch them come due.";
   }
 
-  function sendToAging() {
+  // Only invoices that are ready go into the aging: a held invoice hasn't been sent, so nobody owes it yet.
+  function sendToAging(auto) {
     var run = state.bill.run;
-    if (!run || !run.invoices.length) return;
-    markIssued(run.invoices);
+    var ready = run ? run.invoices.filter(function (i) { return !i.needsYou; }) : [];
+    if (!ready.length) return;
+    if (auto !== true) markIssued(ready);
     state.billed = {
-      key: run.period.key, label: run.period.label, count: run.invoices.length, demo: billDemo(),
-      firstDue: Math.min.apply(null, run.invoices.map(function (i) { return i.dueDate; })),
-      records: BILL.arRecords(run)
+      key: run.period.key, label: run.period.label, count: ready.length, held: run.invoices.length - ready.length, demo: billDemo(),
+      firstDue: Math.min.apply(null, ready.map(function (i) { return i.dueDate; })),
+      records: BILL.arRecords({ invoices: ready })
     };
     runAnalysis();
     renderHandoff();
-    $("chase").scrollIntoView({ behavior: "smooth", block: "start" });
+    if (auto !== true) $("chase").scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function billTemplate() {

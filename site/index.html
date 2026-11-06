@@ -375,12 +375,17 @@ footer .mono{color:#8A8A87;margin-bottom:12px;display:block}
   .wrap{padding:0 16px}
   .strip .wrap{font-size:10px;letter-spacing:.06em}
   .strip .gh{display:none}
-  .hero{padding:32px 0 28px}
+  .hero{padding:28px 0 24px}
   .hero h1{font-size:36px;line-height:1.05}
   .lede{font-size:16px;margin-top:12px}
   .flow{grid-template-columns:1fr;gap:8px;margin-top:22px}
   .flow li.arr{display:none}
-  .flow li.step{padding:12px 14px;border-radius:14px}
+  .flow{gap:6px}
+  .flow li.step{padding:0;border:0;box-shadow:none;background:none}
+  .flow .step a{flex-direction:row;align-items:baseline;gap:10px}
+  .flow .k{flex:none;width:106px}
+  .flow p{font-size:13px}
+  .works{display:none}
   .band{padding:44px 0}
   h2{font-size:31px}
   .listhead{margin-top:32px}
@@ -508,7 +513,19 @@ footer .mono{color:#8A8A87;margin-bottom:12px;display:block}
 </section>
 
 <main>
-  <section id="chase" class="band grey">
+  <section id="founderSec" class="band grey">
+    <div class="wrap">
+      <p class="eyebrow"><b>The answer</b> · this month in three lines</p>
+      <h2>Three lines for the founders</h2>
+      <p class="sub">Billed against last month, what's overdue, and which drafts need a founder. Built from everything below; paste it into Slack or the weekly update.</p>
+      <div class="panel">
+        <div class="pb"><ol class="founder num" id="founder"></ol></div>
+        <div class="ph" style="border-bottom:0;border-top:1px solid var(--line)"><span class="mono" id="founderMeta"></span><span class="spacer"></span><button class="btn" type="button" id="copyFounder">Copy</button></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="chase" class="band">
     <div class="wrap">
       <p class="eyebrow"><b>02 · Chase</b> · every two weeks <span class="pill demo" id="dataPill">Demo data</span></p>
       <h2 id="headline" class="num"></h2>
@@ -540,7 +557,7 @@ footer .mono{color:#8A8A87;margin-bottom:12px;display:block}
     </div>
   </section>
 
-  <section id="bill" class="band">
+  <section id="bill" class="band grey">
     <div class="wrap">
       <p class="eyebrow"><b>01 · Bill</b> · month-end</p>
       <h2 id="billHeadline" class="num"></h2>
@@ -556,7 +573,7 @@ footer .mono{color:#8A8A87;margin-bottom:12px;display:block}
     </div>
   </section>
 
-  <section id="bridgeSec" class="band grey">
+  <section id="bridgeSec" class="band">
     <div class="wrap">
       <p class="eyebrow"><b>01 · Bill</b> · reconciliation</p>
       <h2>Last month to this month</h2>
@@ -565,7 +582,7 @@ footer .mono{color:#8A8A87;margin-bottom:12px;display:block}
     </div>
   </section>
 
-  <section id="pack" class="band">
+  <section id="pack" class="band grey">
     <div class="wrap">
       <p class="eyebrow"><b>03 · Hand off</b> · to the accountants</p>
       <h2 id="packHeadline">Close pack</h2>
@@ -579,18 +596,6 @@ footer .mono{color:#8A8A87;margin-bottom:12px;display:block}
         <button class="btn primary" type="button" id="dlPack">Download close pack (PDF)</button>
         <button class="btn" type="button" id="dlPackCsv">CSV</button>
         <p>No GL coding or revenue recognition: that's the accountants' call.</p>
-      </div>
-    </div>
-  </section>
-
-  <section id="founderSec" class="band grey">
-    <div class="wrap">
-      <p class="eyebrow"><b>03 · Hand off</b> · to the founders</p>
-      <h2>Three lines for the founders</h2>
-      <p class="sub">Billed this month against last, what's overdue, and which drafts need a founder's signature. Paste into Slack or the weekly update.</p>
-      <div class="panel">
-        <div class="pb"><ol class="founder num" id="founder"></ol></div>
-        <div class="ph" style="border-bottom:0;border-top:1px solid var(--line)"><span class="mono" id="founderMeta"></span><span class="spacer"></span><button class="btn" type="button" id="copyFounder">Copy</button></div>
       </div>
     </div>
   </section>
