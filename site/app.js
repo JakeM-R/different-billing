@@ -207,7 +207,7 @@
       runAnalysis();
       renderUploadHead();
       $("guide").open = false;
-      $("chase").scrollIntoView({ behavior: "smooth", block: "start" });
+      goTo("chase");
     };
     $("cancelMap").onclick = function () { $("mapper").innerHTML = ""; };
     $("mapper").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -328,18 +328,11 @@
     var billing = res.customers.filter(function (c) { return c.action === "billing"; }).length;
     var co = [];
     if (needs.length) co.push('<span class="callout you"><b>' + needs.length + " need action</b>: " + needs.map(function (c) { return esc(c.name); }).join(", ") + "</span>");
-    co.push('<span class="callout"><b>' + chase + "</b> chaser draft" + (chase === 1 ? "" : "s") + " ready</span>");
-    if (billing) co.push('<span class="callout"><b>' + billing + "</b> billing repl" + (billing === 1 ? "y" : "ies") + "</span>");
+    co.push('<span class="callout"><b>' + chase + "</b> chaser" + (chase === 1 ? "" : "s") + (billing ? " and <b>" + billing + "</b> billing repl" + (billing === 1 ? "y" : "ies") : "") + " ready to send</span>");
     if (!isDemo() && dateCallout(res.dates)) co.push(dateCallout(res.dates));
-    if (res.excludedTotal) co.push('<span class="callout"><b>' + res.excludedTotal + "</b> rows excluded</span>");
-    if (state.billed) {
-      var b = state.billed;
-      co.push('<span class="callout"><b>' + b.count + "</b> invoice" + (b.count === 1 ? "" : "s") + " from the " + esc(b.label) + " billing run included, due " + esc(AR.fmtShortDate(b.firstDue)) +
-        (b.demo && !isDemo() ? " (demo invoices in your file)" : "") + '<button class="link" type="button" id="unbill">Remove</button></span>');
-    }
     $("callouts").innerHTML = co.join("");
-    var ub = $("unbill");
-    if (ub) ub.onclick = function () { state.billed = null; runAnalysis(); renderHandoff(); };
+    var cust = res.customers.length, bk = function (k) { return res.customers.reduce(function (s, c) { return s + c.buckets[k]; }, 0); };
+    $("agingMeta").textContent = cust + " customers · " + kMoney(bk("b61") + bk("b90")) + " over 60 days" + (state.billed ? " · includes " + state.billed.label + " billing" : "");
 
     renderAging();
     renderCards();
@@ -397,10 +390,14 @@
     if (ex.unreadable) parts.push(ex.unreadable + " unreadable");
     var nRows = allRows().length;
     var cf = ex.conflicts || [];
-    $("excluded").innerHTML = (res.excludedTotal
+    var bl = state.billed;
+    $("excluded").innerHTML = (bl ? "<b>Includes " + bl.count + " invoice" + (bl.count === 1 ? "" : "s") + " from the " + esc(bl.label) + " billing run</b>, due " + esc(AR.fmtShortDate(bl.firstDue)) +
+        (bl.demo && !isDemo() ? " (demo invoices in your file)" : "") + '. <button class="link" type="button" id="unbill">Remove</button><br>' : "") + (res.excludedTotal
       ? "<b>Left out " + res.excludedTotal + " of " + nRows + " rows:</b> " + esc(parts.join(", ")) + "."
       : "<b>No rows left out</b> (" + nRows + " rows).") +
       (cf.length ? " <b>Check the export:</b> " + esc(cf.join(", ")) + (cf.length === 1 ? " is" : " are") + " listed as both paid and open; the first row was used." : "");
+    var ub = $("unbill");
+    if (ub) ub.onclick = function () { state.billed = null; runAnalysis(); renderHandoff(); };
   }
 
   // Tier as coloured text on the facts line. A disputed invoice isn't a tier: it gets a billing reply.
@@ -513,6 +510,22 @@
       .catch(function () { $("scriptCode").textContent = "Couldn't load the script. Serve the page over http(s) rather than file://."; });
   }
 
+  // ---------- Views: one step at a time ----------
+  var VIEWS = ["bill", "chase", "handoff"];
+  function viewFromHash() { var h = location.hash.slice(1); return VIEWS.indexOf(h) !== -1 ? h : null; }
+  function setView(v, push) {
+    VIEWS.forEach(function (k) {
+      $("view-" + k).hidden = k !== v;
+      $("t-" + k).setAttribute("aria-selected", k === v);
+    });
+    if (push && location.hash !== "#" + v) { try { history.pushState(null, "", "#" + v); } catch (e) { /* file:// */ } }
+    document.querySelectorAll("#view-" + v + " .cards textarea").forEach(fit);
+  }
+  function goTo(v) {
+    setView(v, true);
+    $("view-" + v).scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   // ---------- Month-end billing ----------
 
   function billDemo() { return state.bill.source === "demo"; }
@@ -600,7 +613,7 @@
       .concat(run.skipped.filter(function (s) { return s.needsYou; }).map(function (s) { return s.customer; }));
     var co = [];
     if (needs.length) co.push('<span class="callout you"><b>' + needs.length + " to check before sending</b>: " + needs.map(esc).join(", ") + "</span>");
-    if (run.bridge) co.push('<span class="callout"><b>' + signed(run.bridge.change) + "</b> on last month, " + run.bridge.items.length + " change" + (run.bridge.items.length === 1 ? "" : "s") + " explained</span>");
+    if (run.bridge) co.push('<span class="callout"><button class="jump" type="button" data-open="bridgeFold"><b>' + signed(run.bridge.change) + "</b> on last month, " + run.bridge.items.length + " change" + (run.bridge.items.length === 1 ? "" : "s") + " explained</button></span>");
     var off = run.skipped.filter(function (s) { return !s.needsYou; }).length;
     if (off) co.push('<span class="callout"><button class="jump" type="button" data-jump="notBilled"><b>' + off + "</b> contract" + (off === 1 ? "" : "s") + " not billed this month</button></span>");
     if (!billDemo() && dateCallout(run.dates)) co.push(dateCallout(run.dates));
@@ -655,7 +668,7 @@
     var pack = packNow();
     if (!pack) return;
     var bm = function (n) { return bMoney(n); }, am = function (n) { return money(n); };
-    $("packHeadline").innerHTML = "Close pack for " + esc(pack.period.label);
+    $("packHeadline").textContent = "Close pack for " + pack.period.label;
     $("regMeta").textContent = plural(pack.register.length, "invoice");
     $("register").innerHTML = "<thead><tr><th>Invoice</th><th>Customer</th><th class=\"hide-sm\">Issued</th><th class=\"hide-sm\">Due</th><th class=\"r\">Amount</th><th>Status</th></tr></thead><tbody>" +
       pack.register.map(function (r) {
@@ -714,6 +727,7 @@
 
   function renderBridge() {
     var br = state.bill.run.bridge;
+    $("bridgeMeta").textContent = br ? signed(br.change) + " · " + br.items.length + " change" + (br.items.length === 1 ? "" : "s") + ", each with a reason" : "";
     if (!br) {
       $("bridge").innerHTML = '<p class="sub">Add a “Last month billed” column to the contracts file to see what changed since last month.</p>';
       return;
@@ -794,7 +808,7 @@
     var ready = run.invoices.filter(function (i) { return !i.needsYou; }).length;
     var all = ready === run.invoices.length;
     $("handoff").innerHTML = "<p><b>" + (all ? "All " + ready : ready + " of " + run.invoices.length) + " ready.</b> " +
-      (all ? "Import them into QuickBooks or Stripe" : "Check the flagged ones below, then import them into QuickBooks or Stripe") + " and add them to the aging run.</p>" +
+      (all ? "Import them into QuickBooks or Stripe" : "Check the flagged ones below, then import them into QuickBooks or Stripe") + (state.billed && state.billed.key === run.period.key ? ". They're already in the aging and the close pack.</p>" : " and add them to the aging run.</p>") +
       '<button class="btn" type="button" id="dlPdfs">All PDFs</button>' +
       '<button class="btn" type="button" id="dlQbo">QuickBooks CSV</button>' +
       '<button class="btn" type="button" id="dlAr" title="The invoices as rows for the aging run\'s own upload">AR rows CSV</button>' +
@@ -805,8 +819,9 @@
     $("dlQbo").onclick = function () { markIssued(run.invoices); download(pre + "invoices-" + run.period.key + "-quickbooks.csv", BILL.importCSV(run, opts)); };
     $("dlAr").onclick = function () { markIssued(run.invoices); download(pre + "invoices-" + run.period.key + "-ar-rows.csv", BILL.arCSV(run, opts)); };
     $("toAging").onclick = sendToAging;
-    var b = state.billed;
-    $("sentNote").hidden = !(b && b.key === run.period.key);
+    var b = state.billed, inAging = b && b.key === run.period.key;
+    if (inAging) { $("toAging").textContent = "✓ In the aging run"; $("toAging").className = "btn done"; }
+    $("sentNote").hidden = !inAging || b.auto;
     if (b) $("sentNote").textContent = "In the aging run and the close pack: " + b.count + " invoices" + (b.held ? " (" + b.held + " held until fixed)" : "") + ". Move the run date past " + AR.fmtDate(b.firstDue) + " to watch them come due.";
   }
 
@@ -817,13 +832,13 @@
     if (!ready.length) return;
     if (auto !== true) markIssued(ready);
     state.billed = {
-      key: run.period.key, label: run.period.label, count: ready.length, held: run.invoices.length - ready.length, demo: billDemo(),
+      key: run.period.key, label: run.period.label, auto: auto === true, count: ready.length, held: run.invoices.length - ready.length, demo: billDemo(),
       firstDue: Math.min.apply(null, ready.map(function (i) { return i.dueDate; })),
       records: BILL.arRecords({ invoices: ready })
     };
     runAnalysis();
     renderHandoff();
-    if (auto !== true) $("chase").scrollIntoView({ behavior: "smooth", block: "start" });
+    if (auto !== true) goTo("chase");
   }
 
   function billTemplate() {
@@ -882,7 +897,7 @@
       $("billMapper").innerHTML = "";
       runBilling();
       $("billGuide").open = false;
-      $("bill").scrollIntoView({ behavior: "smooth", block: "start" });
+      goTo("bill");
     };
     $("bCancel").onclick = function () { $("billMapper").innerHTML = ""; };
     $("billMapper").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -975,6 +990,8 @@
   document.addEventListener("click", function (e) {
     var j = e.target.closest && e.target.closest("[data-jump]");
     if (j) $(j.dataset.jump).scrollIntoView({ behavior: "smooth", block: "center" });
+    var o = e.target.closest && e.target.closest("[data-open]");
+    if (o) { var d = $(o.dataset.open); d.open = true; d.scrollIntoView({ behavior: "smooth", block: "start" }); }
   });
 
   $("runDate").addEventListener("change", function (e) {
@@ -1118,5 +1135,11 @@
   loadDemo();
   loadBillDemo();
   loadScript();
+  VIEWS.forEach(function (k) { $("t-" + k).addEventListener("click", function () { setView(k, true); }); });
+  setView(viewFromHash() || "chase");
+  window.addEventListener("hashchange", function () { var v = viewFromHash(); if (v) setView(v); });
+  document.querySelectorAll("details.fold").forEach(function (d) {
+    d.addEventListener("toggle", function () { if (d.open) d.querySelectorAll("textarea").forEach(fit); });
+  });
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { document.querySelectorAll(".cards textarea").forEach(fit); });
 })();
