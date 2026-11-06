@@ -453,7 +453,7 @@ footer .mono{color:#8A8A87;margin-bottom:12px;display:block}
 <div class="strip">
   <div class="wrap">
     <span class="dot" aria-hidden="true"></span>
-    <span><span id="stripData">Demo data</span> · built for Different's founder's office by Jake Makking-Robinson</span>
+    <span id="stripData">Demo data · built for Different's founder's office by Jake Makking-Robinson</span>
     <a class="gh" href="https://github.com/JakeM-R/different-billing#readme" target="_blank" rel="noopener">Source ↗</a>
   </div>
 </div>
@@ -469,7 +469,7 @@ footer .mono{color:#8A8A87;margin-bottom:12px;display:block}
       <span class="arr" aria-hidden="true">→</span>
       <button class="step" role="tab" type="button" id="t-handoff" data-view="handoff" aria-controls="view-handoff" aria-selected="false"><span class="k"><b>03</b><span class="chip">Hand off</span></span><p>A close pack for the accountants and a three-line summary for the founders.</p></button>
     </div>
-    <p class="works">Works from a CRM export or a Sheet, on top of whatever sends the invoices (Stripe, QuickBooks). Already run on demo data: pick a step.</p>
+    <p class="works">Works from a CRM export or a Sheet, on top of whatever sends the invoices (Stripe, QuickBooks). <span id="worksTail">Already run on demo data: pick a step.</span></p>
   </div>
 </header>
 
@@ -479,8 +479,8 @@ footer .mono{color:#8A8A87;margin-bottom:12px;display:block}
     <label class="field"><span class="lg">Run date</span><input type="date" id="runDate" aria-label="Aging run date"></label>
     <span class="spacer"></span>
     <div class="tabs" role="tablist" aria-label="Data source">
-      <button role="tab" id="tabDemo" type="button" aria-selected="true">Demo<span class="lg"> data</span></button>
-      <button role="tab" id="tabUpload" type="button" aria-selected="false">Your data</button>
+      <button role="tab" id="tabDemo" type="button" aria-selected="true">Data</button>
+      <button role="tab" id="tabUpload" type="button" aria-selected="false">Upload<span class="lg"> data</span></button>
     </div>
     <details class="signoff" id="settings">
       <summary class="btn ghost" aria-label="Email signature"><span class="lg">Signature</span><span class="sm">Sign</span></summary>
@@ -502,7 +502,7 @@ footer .mono{color:#8A8A87;margin-bottom:12px;display:block}
 
 <section id="uploadPanel" class="upload" hidden>
   <div class="wrap">
-    <p class="eyebrow"><b>Your data</b> · read in this browser, never uploaded</p>
+    <p class="eyebrow"><b>Upload data</b> · replaces the demo in the Data tab · read in this browser, never sent anywhere</p>
     <div class="ugrid">
       <div>
         <div id="billHead"></div>
@@ -528,7 +528,7 @@ footer .mono{color:#8A8A87;margin-bottom:12px;display:block}
   </div>
 </section>
 
-<main>
+<main id="main">
   <section class="view" id="view-bill" role="tabpanel" aria-labelledby="t-bill" hidden>
     <div class="wrap">
       <p class="eyebrow"><b>01 · Bill</b> · month-end</p>

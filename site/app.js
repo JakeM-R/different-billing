@@ -12,7 +12,7 @@
 
   var state = {
     source: "demo", fileName: "", rows: [], headers: [], map: {},
-    ticks: {}, sort: { aging: "needs", drafts: "needs" }, tab: "demo", autoOpened: false, runDate: todayUTC(), settings: Object.assign({}, AR.DEFAULT_SETTINGS),
+    ticks: {}, sort: { aging: "needs", drafts: "needs" }, tab: "data", autoOpened: false, runDate: todayUTC(), settings: Object.assign({}, AR.DEFAULT_SETTINGS),
     result: null, drafts: {}, dirty: {}, edits: {}, fixes: {}, open: {}, draftMode: "template", runId: 0,
     billed: null,
     bill: { source: "demo", fileName: "", rows: [], headers: [], map: {}, dateOrder: "auto", period: null, run: null, emails: {}, dirty: {}, edits: {}, fixes: {}, open: {}, pending: null }
@@ -102,15 +102,15 @@
 
   // ---------- Tabs ----------
 
+  // Two tabs: Data shows the results (demo until you upload), Upload data is only the upload panel.
+  // A file applied there replaces that part of the data and brings you back to the results.
   function setTab(tab, quiet) {
     state.tab = tab;
-    $("tabDemo").setAttribute("aria-selected", tab === "demo");
+    $("tabDemo").setAttribute("aria-selected", tab === "data");
     $("tabUpload").setAttribute("aria-selected", tab === "upload");
     $("uploadPanel").hidden = tab !== "upload";
-    if (tab === "demo") {
-      if (!isDemo()) loadDemo();
-      if (!billDemo()) loadBillDemo();
-    } else {
+    $("main").hidden = tab === "upload";
+    if (tab === "upload") {
       renderUploadHead();
       renderBillHead();
       if (!quiet) $("uploadPanel").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -520,6 +520,7 @@
     document.querySelectorAll("#view-" + v + " .cards textarea").forEach(fit);
   }
   function goTo(v) {
+    if (state.tab === "upload") setTab("data", true);
     setView(v, true);
     $("view-" + v).scrollIntoView({ behavior: "smooth", block: "start" });
   }
@@ -699,8 +700,15 @@
     $("founderMeta").textContent = state.bill.run.period.label + " billing · aging at " + AR.fmtShortDate(state.runDate);
   }
 
+  // The demo label shows only while something on screen is still demo data.
   function renderStrip() {
-    $("stripData").textContent = isDemo() && billDemo() ? "Demo data" : isDemo() || billDemo() ? "Your data and demo data mixed" : "Your data, kept in this browser";
+    var allDemo = isDemo() && billDemo(), anyDemo = isDemo() || billDemo();
+    document.querySelector(".strip .dot").hidden = !anyDemo;
+    var by = "built for Different's founder's office by Jake Makking-Robinson";
+    $("stripData").textContent = allDemo ? "Demo data · " + by
+      : anyDemo ? (isDemo() ? "Demo invoices" : "Demo contracts") + " · " + by
+      : by.charAt(0).toUpperCase() + by.slice(1);
+    $("worksTail").textContent = allDemo ? "Already run on demo data: pick a step." : anyDemo ? "Running on your " + (isDemo() ? "contracts" : "invoices") + " and demo " + (isDemo() ? "invoices" : "contracts") + ": pick a step." : "Running on your data: pick a step.";
   }
 
   function plural(n, one) { return n + " " + one + (n === 1 ? "" : "s"); }
@@ -1012,7 +1020,7 @@
       if (seg.dataset.list === "aging") renderAging(); else renderCards();
     });
   });
-  $("tabDemo").addEventListener("click", function () { setTab("demo"); });
+  $("tabDemo").addEventListener("click", function () { setTab("data"); });
   $("tabUpload").addEventListener("click", function () { setTab("upload"); });
 
   ["sName", "sRole", "fName", "fRole", "cName"].forEach(function (id, i) {
@@ -1133,7 +1141,7 @@
   loadDemo();
   loadBillDemo();
   loadScript();
-  VIEWS.forEach(function (k) { $("t-" + k).addEventListener("click", function () { setView(k, true); }); });
+  VIEWS.forEach(function (k) { $("t-" + k).addEventListener("click", function () { if (state.tab === "upload") setTab("data", true); setView(k, true); }); });
   setView(viewFromHash() || "chase");
   window.addEventListener("hashchange", function () { var v = viewFromHash(); if (v) setView(v); });
   document.querySelectorAll("details.fold").forEach(function (d) {
